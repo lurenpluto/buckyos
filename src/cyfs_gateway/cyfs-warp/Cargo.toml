@@ -28,6 +28,11 @@ mime_guess = "*"
 async-stream = "*"
 rand = "*"
 async-trait = "*"
+regex = "*"
+nom = "*"
+shlex = "*"
+http-types = "*"
+async-recursion = "*"
 
 tokio-stream = { version = "*", features = ["full"] }
 ndn-lib = { path = "../../components/ndn-lib" }
