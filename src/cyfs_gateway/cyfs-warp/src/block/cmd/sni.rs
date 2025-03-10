@@ -12,7 +12,7 @@ impl HttpSniProbeCommandParser {
 }
 
 impl CommandParser for HttpSniProbeCommandParser {
-    fn parse(&self, args: &str) -> Result<CommandExecuterRef, String> {
+    fn parse(&self, args: &str) -> Result<CommandExecutorRef, String> {
         // Args must be empty
         if !args.trim().is_empty() {
             let msg = format!("Invalid http-sni-probe command: {}", args);
@@ -20,22 +20,22 @@ impl CommandParser for HttpSniProbeCommandParser {
             return Err(msg);
         }
 
-        let cmd = HttpSniProbeCommandExecuter::new();
+        let cmd = HttpSniProbeCommandExecutor::new();
         Ok(Arc::new(Box::new(cmd)))
     }
 }
 
 // http-sni-probe command executer
-pub struct HttpSniProbeCommandExecuter {}
+pub struct HttpSniProbeCommandExecutor {}
 
-impl HttpSniProbeCommandExecuter {
+impl HttpSniProbeCommandExecutor {
     pub fn new() -> Self {
-        HttpSniProbeCommandExecuter {}
+        HttpSniProbeCommandExecutor {}
     }
 }
 
-impl CommandParser for HttpSniProbeCommandExecuter {
-    fn parse(&self, args: &str) -> Result<CommandExecuterRef, String> {
+impl CommandParser for HttpSniProbeCommandExecutor {
+    fn parse(&self, args: &str) -> Result<CommandExecutorRef, String> {
         // Args must be empty
         if !args.trim().is_empty() {
             let msg = format!("Invalid http-sni-probe command: {}", args);
@@ -43,13 +43,13 @@ impl CommandParser for HttpSniProbeCommandExecuter {
             return Err(msg);
         }
 
-        let cmd = HttpSniProbeCommandExecuter::new();
+        let cmd = HttpSniProbeCommandExecutor::new();
         Ok(Arc::new(Box::new(cmd)))
     }
 }
 
 #[async_trait::async_trait]
-impl CommandExecuter for HttpSniProbeCommandExecuter {
+impl CommandExecutor for HttpSniProbeCommandExecutor {
     async fn exec(&self, context: &mut Context) -> Result<CommandResult, String> {
         todo!("http-sni-probe not implemented yet");
 

@@ -6,8 +6,14 @@ use std::sync::Arc;
 // EXEC command, like: EXEC app1
 pub struct ExternalCommandParser {}
 
+impl ExternalCommandParser {
+    pub fn new() -> Self {
+        Self {}
+    }
+}
+
 impl CommandParser for ExternalCommandParser {
-    fn parse(&self, args: &str) -> Result<CommandExecuterRef, String> {
+    fn parse(&self, args: &str) -> Result<CommandExecutorRef, String> {
         // Args should not be empty
         if args.trim().is_empty() {
             let msg = format!("Invalid exec command: {}", args);
@@ -15,7 +21,7 @@ impl CommandParser for ExternalCommandParser {
             return Err(msg);
         }
 
-        let cmd = ExternalCommandExecuter {
+        let cmd = ExternalCommandExecutor {
             command: args.to_string(),
         };
         Ok(Arc::new(Box::new(cmd)))
@@ -23,12 +29,12 @@ impl CommandParser for ExternalCommandParser {
 }
 
 // EXEC command executer
-pub struct ExternalCommandExecuter {
+pub struct ExternalCommandExecutor {
     pub command: String,
 }
 
 #[async_trait::async_trait]
-impl CommandExecuter for ExternalCommandExecuter {
+impl CommandExecutor for ExternalCommandExecutor {
     async fn exec(&self, context: &mut Context) -> Result<CommandResult, String> {
         todo!("exec command not implemented yet");
 

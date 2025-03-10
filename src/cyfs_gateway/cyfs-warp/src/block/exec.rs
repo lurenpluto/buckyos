@@ -1,4 +1,4 @@
-use super::block::{Block, Line, Operator, Expression, Command};
+use super::block::{Block, Line, Operator, Expression, CommandItem};
 use super::context::Context;
 use super::cmd::{CommandResult, CommandAction};
 
@@ -127,7 +127,7 @@ impl BlockExecuter {
         }
     }
 
-    async fn execute_command(cmd: &Command, context: &mut Context) -> Result<CommandResult, String> {
+    async fn execute_command(cmd: &CommandItem, context: &mut Context) -> Result<CommandResult, String> {
         todo!("execute_command not implemented yet");
     }
 }

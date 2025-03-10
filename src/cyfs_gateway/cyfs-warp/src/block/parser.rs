@@ -1,24 +1,23 @@
-use super::block::*;
+use super::{block::*, cmd::CommandParserFactory};
 use nom::{
     branch::alt,
     bytes::complete::tag,
-    character::complete::{space0},
+    character::complete::space0,
     combinator::{map, opt},
     multi::many0,
-    sequence::{delimited},
-    IResult,
-    Parser,
+    sequence::delimited,
+    IResult, Parser,
 };
 use shlex;
 
-pub struct CommandParser {
+pub struct BlockParser {
     // Command name
     name: String,
     // Command args
     args: Vec<String>,
 }
 
-impl CommandParser {
+impl BlockParser {
     pub fn parse(block: &str) -> Result<Block, String> {
         let lines: Vec<&str> = Self::split_lines(block);
         let mut block = Block::new();
@@ -66,13 +65,11 @@ impl CommandParser {
             (None, trimmed)
         };
 
-        let (_, expressions) =
-            Self::parse_expressions(expr_input).map_err(|e| {
-                let msg = format!("Parse expressions error: {}, {:?}", expr_input, e);
-                error!("{}", msg);
-                msg
-            })?;
-
+        let (_, expressions) = Self::parse_expressions(expr_input).map_err(|e| {
+            let msg = format!("Parse expressions error: {}, {:?}", expr_input, e);
+            error!("{}", msg);
+            msg
+        })?;
 
         Ok(Line { label, expressions })
     }
@@ -84,10 +81,12 @@ impl CommandParser {
             let (i, op) = opt(alt((
                 map(tag("&&"), |_| Operator::And),
                 map(tag("||"), |_| Operator::Or),
-            ))).parse(i)?;
+            )))
+            .parse(i)?;
 
             Ok((i, (expr, op.unwrap_or(Operator::None))))
-        }).parse(input)
+        })
+        .parse(input)
 
         /*
         let (input, exprs) = many0(tuple((
@@ -120,12 +119,11 @@ impl CommandParser {
     // Parse group of expressions with brackets
     fn parse_group(input: &str) -> IResult<&str, Expression> {
         let mut parser = delimited(tag("("), Self::parse_expressions, tag(")"));
-        let (input, expressions) = parser.parse(input)
-            .map_err(|e| {
-                let msg = format!("Parse group error: {}, {:?}", input, e);
-                error!("{}", msg);
-                e
-            })?;
+        let (input, expressions) = parser.parse(input).map_err(|e| {
+            let msg = format!("Parse group error: {}, {:?}", input, e);
+            error!("{}", msg);
+            e
+        })?;
 
         Ok((input, Expression::Group(expressions)))
     }
@@ -140,22 +138,22 @@ impl CommandParser {
             )),
             |token_sets| {
                 if token_sets.is_empty() {
-                    return Expression::Command(Command {
-                        name: "".to_string(),
-                        args: Vec::new(),
-                    });
+                    let cmd = CommandItem::new_empty();
+                    return Expression::Command(cmd);
                 }
-                
+
                 let tokens = token_sets[0].clone();
                 let name = tokens[0].clone();
                 if name.to_ascii_lowercase() == "goto" && tokens.len() > 1 {
                     Expression::Goto(tokens[1].clone())
                 } else {
                     let args = tokens[1..].to_vec();
-                    Expression::Command(Command { name, args })
+                    Expression::Command(CommandItem::new(name, args))
                 }
             },
-        ).parse(input).map_err(|e| {
+        )
+        .parse(input)
+        .map_err(|e| {
             let msg = format!("Parse command error: {}, {:?}", input, e);
             error!("{}", msg);
             e
@@ -163,4 +161,43 @@ impl CommandParser {
 
         Ok((input, tokens))
     }
+}
+
+
+pub struct BlockCommandTranslator {
+    parser: CommandParserFactory,
+}
+
+impl BlockCommandTranslator {
+    pub fn new(parser: CommandParserFactory) -> Self {
+        Self { parser }
+    }
+
+    pub async fn translate(&self, block: &mut Block) -> Result<(), String> {
+        for line in &mut block.lines {
+            for (expr, _) in &mut line.expressions {
+                if let Expression::Command(ref mut cmd) = expr {
+                    let parser = self.parser.get_parser(&cmd.command.name);
+                    if parser.is_none() {
+                        let msg = format!("No parser for command: {}", cmd.command.name);
+                        error!("{}", msg);
+                        return Err(msg);
+                    }
+
+                    let parser = parser.unwrap();
+                    let args = cmd.command.args.join(" ");
+                    let executer = parser.parse(&args).map_err(|e| {
+                        let msg = format!("Parse command error: {:?}, {:?}", cmd.command, e);
+                        error!("{}", msg);
+                        msg
+                    })?;
+                    
+                    cmd.executor = Some(executer);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
 }

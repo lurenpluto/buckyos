@@ -1,47 +1,10 @@
 use crate::block::context::Context;
-use std::sync::{Arc, Mutex};
-use std::collections::HashMap;
+use std::sync::Arc;
 
 pub type CommandParserRef = Arc<Box<dyn CommandParser>>;
 
 pub trait CommandParser {
-    fn parse(&self, args: &str) -> Result<CommandExecuterRef, String>;
-}
-
-#[derive(Clone)]
-pub struct CommandParserFactory {
-    parsers: Arc<Mutex<HashMap<String, CommandParserRef>>>,
-}
-
-impl CommandParserFactory {
-    pub fn new() -> Self {
-        Self {
-            parsers: Arc::new(Mutex::new(HashMap::new())),
-        }
-    }
-
-    pub fn register(&self, name: &str, parser: CommandParserRef) {
-        let mut parsers = self.parsers.lock().unwrap();
-        if let Some(_prev) = parsers.insert(name.to_string(), parser) {
-            error!("Command parser {} already exists, will be replaced", name);
-        }
-    }
-
-    pub fn get_parser(&self, name: &str) -> Option<CommandParserRef> {
-        let parsers = self.parsers.lock().unwrap();
-        parsers.get(name).cloned()
-    }
-
-    pub fn parse(&self, name: &str, args: &str) -> Result<CommandExecuterRef, String> {
-        let parser = self.get_parser(name);
-        if parser.is_none() {
-            let msg = format!("Command parser {} not found", name);
-            error!("{}", msg);
-            return Err(msg);
-        }
-
-        parser.unwrap().parse(args)
-    }
+    fn parse(&self, args: &str) -> Result<CommandExecutorRef, String>;
 }
 
 #[derive(Debug, Clone)]
@@ -109,14 +72,10 @@ impl CommandResult {
     }
 }
 
-// CommandExecuter is the trait for executing a command
+// CommandExecutor is the trait for executing a command
 #[async_trait::async_trait]
-pub trait CommandExecuter: Send + Sync {
+pub trait CommandExecutor: Send + Sync {
     async fn exec(&self, context: &mut Context) -> Result<CommandResult, String>;
 }
 
-pub type CommandExecuterRef = Arc<Box<dyn CommandExecuter>>;
-
-
-
-
+pub type CommandExecutorRef = Arc<Box<dyn CommandExecutor>>;

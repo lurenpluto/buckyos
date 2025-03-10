@@ -1,5 +1,6 @@
-
+use super::cmd::*;
 use std::collections::HashMap;
+use std::fmt;
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Operator {
@@ -15,10 +16,37 @@ pub struct Command {
     pub args: Vec<String>,
 }
 
+#[derive(Clone)]
+pub struct CommandItem {
+    pub command: Command,
+    pub executor: Option<CommandExecutorRef>,
+}
+
+impl fmt::Debug for CommandItem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Use command instead of self
+        write!(f, "{:?}", self.command)
+    }
+}
+
+impl CommandItem {
+    pub fn new(name: String, args: Vec<String>) -> Self {
+        let command = Command { name, args };
+        Self {
+            command,
+            executor: None,
+        }
+    }
+
+    pub fn new_empty() -> Self {
+        Self::new("".to_string(), Vec::new())
+    }
+}
+
 // Command or Expression
 #[derive(Debug, Clone)]
 pub enum Expression {
-    Command(Command),
+    Command(CommandItem),
     Group(Vec<(Expression, Operator)>), // Sub-expression in brackets
     Goto(String),                       // Goto label
 }

@@ -15,7 +15,7 @@ impl MatchCommandParser {
 }
 
 impl CommandParser for MatchCommandParser {
-    fn parse(&self, args: &str) -> Result<CommandExecuterRef, String> {
+    fn parse(&self, args: &str) -> Result<CommandExecutorRef, String> {
         let parts: Vec<&str> = args.split_whitespace().collect();
         if parts.len() != 2 {
             let msg = format!("Invalid match command: {}", args);
@@ -26,19 +26,19 @@ impl CommandParser for MatchCommandParser {
         let key = parts[0].to_string();
         let pattern = Regex::new(parts[1]).map_err(|e| format!("Invalid pattern: {}", e))?;
 
-        let cmd = MatchCommandExecuter { key, pattern };
+        let cmd = MatchCommandExecutor { key, pattern };
         Ok(Arc::new(Box::new(cmd)))
     }
 }
 
 // Match command executer
-pub struct MatchCommandExecuter {
+pub struct MatchCommandExecutor {
     pub key: String,
     pub pattern: Regex,
 }
 
 #[async_trait::async_trait]
-impl CommandExecuter for MatchCommandExecuter {
+impl CommandExecutor for MatchCommandExecutor {
     async fn exec(&self, context: &mut Context) -> Result<CommandResult, String> {
         // First get the value
         let value = context.get_value(&self.key);

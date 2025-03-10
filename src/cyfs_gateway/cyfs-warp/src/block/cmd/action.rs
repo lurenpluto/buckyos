@@ -13,7 +13,7 @@ impl ActionCommandParser {
 }
 
 impl CommandParser for ActionCommandParser {
-    fn parse(&self, args: &str) -> Result<CommandExecuterRef, String> {
+    fn parse(&self, args: &str) -> Result<CommandExecutorRef, String> {
         // Args must be empty
         if !args.trim().is_empty() {
             let msg = format!("Invalid action command: {}", args);
@@ -21,7 +21,7 @@ impl CommandParser for ActionCommandParser {
             return Err(msg);
         }
 
-        let cmd = ActionCommandExecuter {
+        let cmd = ActionCommandExecutor {
             action: self.action.clone(),
         };
         Ok(Arc::new(Box::new(cmd)))
@@ -29,19 +29,18 @@ impl CommandParser for ActionCommandParser {
 }
 
 // Drop & Pass command
-pub struct ActionCommandExecuter {
+pub struct ActionCommandExecutor {
     action: CommandAction,
 }
 
-impl ActionCommandExecuter {
+impl ActionCommandExecutor {
     pub fn new(action: CommandAction) -> Self {
-        ActionCommandExecuter { action }
+        ActionCommandExecutor { action }
     }
 }
 
-
 #[async_trait::async_trait]
-impl CommandExecuter for ActionCommandExecuter {
+impl CommandExecutor for ActionCommandExecutor {
     async fn exec(&self, _context: &mut Context) -> Result<CommandResult, String> {
         Ok(CommandResult {
             success: true,

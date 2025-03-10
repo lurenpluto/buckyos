@@ -2,7 +2,7 @@ use super::cmd::*;
 use crate::block::context::Context;
 use std::sync::Arc;
 
-// CMD: set_lable_by_host_db REQ_HEADER.host
+// CMD: set_label_by_host_db REQ_HEADER.host
 pub struct SetLabelByHostDbCommandParser {}
 
 impl SetLabelByHostDbCommandParser {
@@ -12,7 +12,7 @@ impl SetLabelByHostDbCommandParser {
 }
 
 impl CommandParser for SetLabelByHostDbCommandParser {
-    fn parse(&self, args: &str) -> Result<CommandExecuterRef, String> {
+    fn parse(&self, args: &str) -> Result<CommandExecutorRef, String> {
         // Args should not be empty
         let args = args.trim();
         if args.is_empty() {
@@ -28,19 +28,19 @@ impl CommandParser for SetLabelByHostDbCommandParser {
             return Err(msg);
         }
 
-        let cmd = SetLabelByHostDbCommandExecuter::new(args);
+        let cmd = SetLabelByHostDbCommandExecutor::new(args);
         Ok(Arc::new(Box::new(cmd)))
     }
 }
 
 // Set label by host db command executer
-pub struct SetLabelByHostDbCommandExecuter {
+pub struct SetLabelByHostDbCommandExecutor {
     pub key: String,
 }
 
-impl SetLabelByHostDbCommandExecuter {
+impl SetLabelByHostDbCommandExecutor {
     pub fn new(key: &str) -> Self {
-        SetLabelByHostDbCommandExecuter {
+        SetLabelByHostDbCommandExecutor {
             key: key.to_string(),
         }
     }
@@ -48,7 +48,7 @@ impl SetLabelByHostDbCommandExecuter {
 
 
 #[async_trait::async_trait]
-impl CommandExecuter for SetLabelByHostDbCommandExecuter {
+impl CommandExecutor for SetLabelByHostDbCommandExecutor {
     async fn exec(&self, context: &mut Context) -> Result<CommandResult, String> {
         // First get value from context, then load label from host db, then set label to request header
         let value = context.get_value(self.key.as_str());
@@ -74,7 +74,7 @@ impl HaveLabelCommandParser {
 }
 
 impl CommandParser for HaveLabelCommandParser {
-    fn parse(&self, args: &str) -> Result<CommandExecuterRef, String> {
+    fn parse(&self, args: &str) -> Result<CommandExecutorRef, String> {
         let parts: Vec<&str> = args.split_whitespace().collect();
         if parts.len() != 2 {
             let msg = format!("Invalid have_label command: {}", args);
@@ -82,19 +82,19 @@ impl CommandParser for HaveLabelCommandParser {
             return Err(msg);
         }
 
-        let cmd = HaveLabelCommandExecuter::new(parts[0], parts[1]);
+        let cmd = HaveLabelCommandExecutor::new(parts[0], parts[1]);
         Ok(Arc::new(Box::new(cmd)))
     }
 }
 
-pub struct HaveLabelCommandExecuter {
+pub struct HaveLabelCommandExecutor {
     pub key: String,
     pub label: String,
 }
 
-impl HaveLabelCommandExecuter {
+impl HaveLabelCommandExecutor {
     pub fn new(key: &str, label: &str) -> Self {
-        HaveLabelCommandExecuter {
+        HaveLabelCommandExecutor {
             key: key.to_string(),
             label: label.to_string(),
         }
@@ -103,7 +103,7 @@ impl HaveLabelCommandExecuter {
 
 
 #[async_trait::async_trait]
-impl CommandExecuter for HaveLabelCommandExecuter {
+impl CommandExecutor for HaveLabelCommandExecutor {
     async fn exec(&self, context: &mut Context) -> Result<CommandResult, String> {
         // First get value from context, then check if the label exists
         let labels = context.get_value(self.key.as_str());
