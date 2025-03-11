@@ -6,6 +6,7 @@ use super::label::{HaveLabelCommandParser, SetLabelByHostDbCommandParser};
 use super::sni::HttpSniProbeCommandParser;
 use super::action::ActionCommandParser;
 use super::match_::MatchCommandParser;
+use super::assign::AssignCommandParser;
 
 #[derive(Clone)]
 pub struct CommandParserFactory {
@@ -50,7 +51,9 @@ impl CommandParserFactory {
         let pass_action = ActionCommandParser::new(CommandAction::Pass);
         self.register("PASS", Arc::new(Box::new(pass_action)));
 
-
+        // assign command
+        self.register("assign", Arc::new(Box::new(AssignCommandParser::new())));
+        
         // match command
         self.register("match", Arc::new(Box::new(MatchCommandParser::new())));
 

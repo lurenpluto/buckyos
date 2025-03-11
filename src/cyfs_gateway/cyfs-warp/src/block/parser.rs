@@ -90,33 +90,11 @@ impl BlockParser {
             Ok((i, (expr, op.unwrap_or(Operator::None))))
         })
         .parse(input)
-
-        /*
-        let (input, exprs) = many0(tuple((
-            Self::parse_expression,
-            opt(alt((
-                map(tag("&&"), |_| Operator::And),
-                map(tag("||"), |_| Operator::Or),
-            ))),
-        ))).parse(input)
-        .map_err(|e| {
-            let msg = format!("Parse error: {}, {:?}", input, e);
-            error!("{}", msg);
-            e
-        })?;
-
-        let exprs = exprs
-            .into_iter()
-            .map(|(expr, op)| (expr, op.unwrap_or(Operator::None)))
-            .collect();
-
-        Ok((input, exprs))
-        */
     }
 
     // Parse expression with brackets or command
     fn parse_expression(input: &str) -> IResult<&str, Expression> {
-        alt((Self::parse_group, Self::parse_command)).parse(input)
+        alt((Self::parse_assign, Self::parse_group, Self::parse_command)).parse(input)
     }
 
     // Parse group of expressions with brackets
@@ -129,6 +107,20 @@ impl BlockParser {
         })?;
 
         Ok((input, Expression::Group(expressions)))
+    }
+
+    // Parse assign expression with = or :=
+    fn parse_assign(input: &str) -> IResult<&str, Expression> {
+        let (input, key) = nom::bytes::complete::take_till(|c: char| c == '=' || c == ':')(input)?;
+        let (input, op) = alt((tag(":="), tag("="))).parse(input)?;
+        let (input, value) =
+            nom::bytes::complete::take_till(|c: char| c.is_whitespace() || c == '&' || c == '|')(input)?;
+        
+        let name = "assign".to_string();
+        let args = vec![key.trim().to_string(), op.trim().to_string(), value.trim().to_string()];
+    
+        let cmd = CommandItem::new(name, args);
+        Ok((input, Expression::Command(cmd)))
     }
 
     // Parse command
@@ -166,7 +158,6 @@ impl BlockParser {
     }
 }
 
-
 pub struct BlockCommandTranslator {
     parser: CommandParserFactory,
 }
@@ -191,7 +182,10 @@ impl BlockCommandTranslator {
 
                     // First check if cmd is valid for the block type
                     if !parser.check(block.block_type) {
-                        let msg = format!("Invalid command for block type: {:?}, block={:?}", cmd.command, block.block_type);
+                        let msg = format!(
+                            "Invalid command for block type: {:?}, block={:?}",
+                            cmd.command, block.block_type
+                        );
                         error!("{}", msg);
                         return Err(msg);
                     }
@@ -210,5 +204,4 @@ impl BlockCommandTranslator {
 
         Ok(())
     }
-
 }
