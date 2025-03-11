@@ -1,5 +1,5 @@
 use super::cmd::*;
-use crate::block::context::Context;
+use crate::block::{context::Context, block::BlockType};
 use std::sync::Arc;
 
 
@@ -13,6 +13,13 @@ impl ExternalCommandParser {
 }
 
 impl CommandParser for ExternalCommandParser {
+    fn check(&self, block_type: BlockType) -> bool {
+        match block_type {
+            BlockType::Probe | BlockType::Process => true,
+            _ => false,
+        }
+    }
+
     fn parse(&self, args: &str) -> Result<CommandExecutorRef, String> {
         // Args should not be empty
         if args.trim().is_empty() {

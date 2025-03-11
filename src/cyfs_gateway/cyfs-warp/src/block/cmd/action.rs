@@ -1,5 +1,5 @@
 use super::cmd::*;
-use crate::block::context::Context;
+use crate::block::{block::BlockType, context::Context};
 use std::sync::Arc;
 
 pub struct ActionCommandParser {
@@ -13,6 +13,11 @@ impl ActionCommandParser {
 }
 
 impl CommandParser for ActionCommandParser {
+    fn check(&self, _block_type: BlockType) -> bool {
+        // Action command can be used in any block
+        true
+    }
+
     fn parse(&self, args: &str) -> Result<CommandExecutorRef, String> {
         // Args must be empty
         if !args.trim().is_empty() {

@@ -11,16 +11,19 @@ use nom::{
 use shlex;
 
 pub struct BlockParser {
-    // Command name
-    name: String,
-    // Command args
-    args: Vec<String>,
+    block_type: BlockType,
 }
 
 impl BlockParser {
-    pub fn parse(block: &str) -> Result<Block, String> {
+    pub fn new(block_type: BlockType) -> Self {
+        Self { block_type }
+    }
+}
+
+impl BlockParser {
+    pub fn parse(&self, block: &str) -> Result<Block, String> {
         let lines: Vec<&str> = Self::split_lines(block);
-        let mut block = Block::new();
+        let mut block = Block::new(self.block_type);
 
         if lines.is_empty() {
             warn!("Empty block");
@@ -185,13 +188,22 @@ impl BlockCommandTranslator {
                     }
 
                     let parser = parser.unwrap();
+
+                    // First check if cmd is valid for the block type
+                    if !parser.check(block.block_type) {
+                        let msg = format!("Invalid command for block type: {:?}, block={:?}", cmd.command, block.block_type);
+                        error!("{}", msg);
+                        return Err(msg);
+                    }
+
+                    // Then parse args to executor
                     let args = cmd.command.args.join(" ");
                     let executer = parser.parse(&args).map_err(|e| {
                         let msg = format!("Parse command error: {:?}, {:?}", cmd.command, e);
                         error!("{}", msg);
                         msg
                     })?;
-                    
+
                     cmd.executor = Some(executer);
                 }
             }

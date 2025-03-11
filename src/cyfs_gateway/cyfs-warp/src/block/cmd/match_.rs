@@ -1,5 +1,5 @@
 use super::cmd::*;
-use crate::block::context::Context;
+use crate::block::{context::Context, block::BlockType};
 use regex::Regex;
 use std::sync::Arc;
 
@@ -15,6 +15,11 @@ impl MatchCommandParser {
 }
 
 impl CommandParser for MatchCommandParser {
+    fn check(&self, _block_type: BlockType) -> bool {
+        // Match cmd can be used in any block
+        true
+    }
+
     fn parse(&self, args: &str) -> Result<CommandExecutorRef, String> {
         let parts: Vec<&str> = args.split_whitespace().collect();
         if parts.len() != 2 {

@@ -1,5 +1,5 @@
 use super::cmd::*;
-use crate::block::context::Context;
+use crate::block::{context::Context, block::BlockType};
 use std::sync::Arc;
 
 // http-sni-probe command parser
@@ -12,6 +12,13 @@ impl HttpSniProbeCommandParser {
 }
 
 impl CommandParser for HttpSniProbeCommandParser {
+    fn check(&self, block_type: BlockType) -> bool {
+        match block_type {
+            BlockType::Probe => true,
+            _ => false,
+        }
+    }
+
     fn parse(&self, args: &str) -> Result<CommandExecutorRef, String> {
         // Args must be empty
         if !args.trim().is_empty() {
@@ -34,27 +41,13 @@ impl HttpSniProbeCommandExecutor {
     }
 }
 
-impl CommandParser for HttpSniProbeCommandExecutor {
-    fn parse(&self, args: &str) -> Result<CommandExecutorRef, String> {
-        // Args must be empty
-        if !args.trim().is_empty() {
-            let msg = format!("Invalid http-sni-probe command: {}", args);
-            error!("{}", msg);
-            return Err(msg);
-        }
-
-        let cmd = HttpSniProbeCommandExecutor::new();
-        Ok(Arc::new(Box::new(cmd)))
-    }
-}
-
 #[async_trait::async_trait]
 impl CommandExecutor for HttpSniProbeCommandExecutor {
     async fn exec(&self, context: &mut Context) -> Result<CommandResult, String> {
         todo!("http-sni-probe not implemented yet");
 
-        context.set_value("REQ_HEADER.host", "");
+        // context.set_value("REQ_HEADER.host", "");
 
-        Ok(CommandResult::success())
+        // Ok(CommandResult::success())
     }
 }

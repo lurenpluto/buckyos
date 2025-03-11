@@ -1,9 +1,11 @@
-use crate::block::context::Context;
+use crate::block::{block::BlockType, context::Context};
 use std::sync::Arc;
 
 pub type CommandParserRef = Arc<Box<dyn CommandParser>>;
 
 pub trait CommandParser {
+    // To check if the command is valid in the block
+    fn check(&self, block_type: BlockType) -> bool;
     fn parse(&self, args: &str) -> Result<CommandExecutorRef, String>;
 }
 

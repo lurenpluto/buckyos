@@ -1,5 +1,5 @@
 use super::cmd::*;
-use crate::block::context::Context;
+use crate::block::{context::Context, block::BlockType};
 use std::sync::Arc;
 
 // CMD: set_label_by_host_db REQ_HEADER.host
@@ -12,6 +12,10 @@ impl SetLabelByHostDbCommandParser {
 }
 
 impl CommandParser for SetLabelByHostDbCommandParser {
+    fn check(&self, _block_type: BlockType) -> bool {
+       true
+    }
+
     fn parse(&self, args: &str) -> Result<CommandExecutorRef, String> {
         // Args should not be empty
         let args = args.trim();
@@ -74,6 +78,11 @@ impl HaveLabelCommandParser {
 }
 
 impl CommandParser for HaveLabelCommandParser {
+    fn check(&self, block_type: BlockType) -> bool {
+        // Have label command can be used in any block
+        true
+    }
+
     fn parse(&self, args: &str) -> Result<CommandExecutorRef, String> {
         let parts: Vec<&str> = args.split_whitespace().collect();
         if parts.len() != 2 {

@@ -2,7 +2,16 @@ use super::cmd::*;
 use std::collections::HashMap;
 use std::fmt;
 
-#[derive(Debug, PartialEq, Clone)]
+// The different types of blocks, some cmds are only allowed in certain blocks
+// Block type
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum BlockType {
+    Probe,
+    Process,
+    Rewrite,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Operator {
     And,  // &&
     Or,   // ||
@@ -61,13 +70,15 @@ pub struct Line {
 // Block of lines
 #[derive(Debug)]
 pub struct Block {
+    pub block_type: BlockType,
     pub lines: Vec<Line>,
     pub label_map: HashMap<String, usize>, // Label to line index
 }
 
 impl Block {
-    pub fn new() -> Self {
-        Block {
+    pub fn new(block_type: BlockType) -> Self {
+        Self {
+            block_type,
             lines: Vec::new(),
             label_map: HashMap::new(),
         }
