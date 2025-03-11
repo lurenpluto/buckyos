@@ -20,17 +20,15 @@ impl CommandParser for ExternalCommandParser {
         }
     }
 
-    fn parse(&self, args: &str) -> Result<CommandExecutorRef, String> {
+    fn parse(&self, args: &Vec<String>) -> Result<CommandExecutorRef, String> {
         // Args should not be empty
-        if args.trim().is_empty() {
-            let msg = format!("Invalid exec command: {}", args);
+        if args.is_empty() {
+            let msg = format!("Invalid exec command: {:?}", args);
             error!("{}", msg);
             return Err(msg);
         }
 
-        let cmd = ExternalCommandExecutor {
-            command: args.to_string(),
-        };
+        let cmd = ExternalCommandExecutor::new(args);
         Ok(Arc::new(Box::new(cmd)))
     }
 }
@@ -38,6 +36,25 @@ impl CommandParser for ExternalCommandParser {
 // EXEC command executer
 pub struct ExternalCommandExecutor {
     pub command: String,
+    pub args: Vec<String>,
+}
+
+impl ExternalCommandExecutor {
+    pub fn new(args: &Vec<String>) -> Self {
+        assert!(args.len() > 0);
+
+        if args.len() == 1 {
+            return Self {
+                command: args[0].clone(),
+                args: vec![],
+            };
+        }
+
+        Self {
+            command: args[0].clone(),
+            args: args[1..].to_vec(),
+        }
+    }
 }
 
 #[async_trait::async_trait]

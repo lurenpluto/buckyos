@@ -18,10 +18,10 @@ impl CommandParser for ActionCommandParser {
         true
     }
 
-    fn parse(&self, args: &str) -> Result<CommandExecutorRef, String> {
+    fn parse(&self,  args: &Vec<String>) -> Result<CommandExecutorRef, String> {
         // Args must be empty
-        if !args.trim().is_empty() {
-            let msg = format!("Invalid action command: {}", args);
+        if !args.is_empty() {
+            let msg = format!("Invalid action command: {:?}", args);
             error!("{}", msg);
             return Err(msg);
         }

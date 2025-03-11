@@ -16,23 +16,22 @@ impl CommandParser for SetLabelByHostDbCommandParser {
        true
     }
 
-    fn parse(&self, args: &str) -> Result<CommandExecutorRef, String> {
+    fn parse(&self, args: &Vec<String>) -> Result<CommandExecutorRef, String> {
         // Args should not be empty
-        let args = args.trim();
         if args.is_empty() {
-            let msg = format!("Invalid set_label_by_host_db command: {}", args);
+            let msg = format!("Invalid set_label_by_host_db command: {:?}", args);
             error!("{}", msg);
             return Err(msg);
         }
 
         // Only accept one argument
-        if args.split_whitespace().count() != 1 {
-            let msg = format!("Invalid set_label_by_host_db command: {}", args);
+        if args.len() != 1 {
+            let msg = format!("Invalid set_label_by_host_db command: {:?}", args);
             error!("{}", msg);
             return Err(msg);
         }
 
-        let cmd = SetLabelByHostDbCommandExecutor::new(args);
+        let cmd = SetLabelByHostDbCommandExecutor::new(args[0].as_str());
         Ok(Arc::new(Box::new(cmd)))
     }
 }
@@ -83,15 +82,14 @@ impl CommandParser for HaveLabelCommandParser {
         true
     }
 
-    fn parse(&self, args: &str) -> Result<CommandExecutorRef, String> {
-        let parts: Vec<&str> = args.split_whitespace().collect();
-        if parts.len() != 2 {
-            let msg = format!("Invalid have_label command: {}", args);
+    fn parse(&self, args: &Vec<String>) -> Result<CommandExecutorRef, String> {
+        if args.len() != 2 {
+            let msg = format!("Invalid have_label command: {:?}", args);
             error!("{}", msg);
             return Err(msg);
         }
 
-        let cmd = HaveLabelCommandExecutor::new(parts[0], parts[1]);
+        let cmd = HaveLabelCommandExecutor::new(args[0].clone(), args[1].clone());
         Ok(Arc::new(Box::new(cmd)))
     }
 }
@@ -102,10 +100,10 @@ pub struct HaveLabelCommandExecutor {
 }
 
 impl HaveLabelCommandExecutor {
-    pub fn new(key: &str, label: &str) -> Self {
+    pub fn new(key: String, label: String) -> Self {
         HaveLabelCommandExecutor {
-            key: key.to_string(),
-            label: label.to_string(),
+            key,
+            label,
         }
     }
 }

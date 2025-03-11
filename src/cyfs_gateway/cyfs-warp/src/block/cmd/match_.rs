@@ -20,16 +20,19 @@ impl CommandParser for MatchCommandParser {
         true
     }
 
-    fn parse(&self, args: &str) -> Result<CommandExecutorRef, String> {
-        let parts: Vec<&str> = args.split_whitespace().collect();
-        if parts.len() != 2 {
-            let msg = format!("Invalid match command: {}", args);
+    fn parse(&self, args: &Vec<String>) -> Result<CommandExecutorRef, String> {
+        if args.len() != 2 {
+            let msg = format!("Invalid match command: {:?}", args);
             error!("{}", msg);
             return Err(msg);
         }
 
-        let key = parts[0].to_string();
-        let pattern = Regex::new(parts[1]).map_err(|e| format!("Invalid pattern: {}", e))?;
+        let key = args[0].clone();
+        let pattern = Regex::new(args[1].as_str()).map_err(|e| {
+            let msg = format!("Invalid match pattern: {:?}, {}", args, e);
+            error!("{}", msg);
+            msg
+        })?;
 
         let cmd = MatchCommandExecutor { key, pattern };
         Ok(Arc::new(Box::new(cmd)))
