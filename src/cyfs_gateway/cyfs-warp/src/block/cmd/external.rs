@@ -42,9 +42,9 @@ pub struct ExternalCommandExecutor {
 
 #[async_trait::async_trait]
 impl CommandExecutor for ExternalCommandExecutor {
-    async fn exec(&self, context: &mut Context) -> Result<CommandResult, String> {
+    async fn exec(&self, _context: &mut Context) -> Result<CommandResult, String> {
         todo!("exec command not implemented yet");
 
-        Ok(CommandResult::success())
+        // Ok(CommandResult::success())
     }
 }

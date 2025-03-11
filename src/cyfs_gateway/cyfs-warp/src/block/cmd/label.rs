@@ -78,7 +78,7 @@ impl HaveLabelCommandParser {
 }
 
 impl CommandParser for HaveLabelCommandParser {
-    fn check(&self, block_type: BlockType) -> bool {
+    fn check(&self, _block_type: BlockType) -> bool {
         // Have label command can be used in any block
         true
     }

@@ -4,11 +4,16 @@ mod router;
 mod http_server;
 mod ndn_router;
 mod cert;
+mod block;
+mod chain;
 
 pub use router::*;
 pub use http_server::*;
 
 use anyhow::Result;
+
+#[macro_use]
+extern crate log;
 
 // 辅助函数：解析Range header
 pub fn parse_range(range: &str, file_size: u64) -> Result<(u64, u64)> {

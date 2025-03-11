@@ -127,7 +127,7 @@ impl BlockExecuter {
         }
     }
 
-    async fn execute_command(cmd: &CommandItem, context: &mut Context) -> Result<CommandResult, String> {
+    async fn execute_command(_cmd: &CommandItem, _context: &mut Context) -> Result<CommandResult, String> {
         todo!("execute_command not implemented yet");
     }
 }
