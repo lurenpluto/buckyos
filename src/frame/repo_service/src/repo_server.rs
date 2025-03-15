@@ -285,7 +285,7 @@ impl RepoServer {
                 error!("parse chunk_id failed, err:{}", e);
                 RPCErrors::ReasonError(format!("parse chunk_id failed, err:{}", e))
             })?;
-            named_mgr.set_file(format!("/repo/install_pkg/{}/{}",pkg_id,chunk_id),&chunk_obj_id,
+            named_mgr.set_file(format!("/repo/install_pkg/{}/{}",pkg_id,chunk_id).as_str(),&chunk_obj_id,
             "repo_service","root").await
             .map_err(|e| {
                 error!("set NDN file failed, err:{}", e);
@@ -313,6 +313,7 @@ impl RepoServer {
         return Ok(current_pkg_list);
     }
 
+    //在repo里安装pkg(pkg_name已经在index-db中了)
     async fn handle_install_pkg(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
         let pkg_list = req.params.get("pkg_list");
         let install_task_name = ReqHelper::get_str_param_from_req(&req,"task_name")?;
@@ -474,7 +475,7 @@ impl RepoServer {
                 let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(Some("default")).await.unwrap();
                 let named_mgr = named_mgr.lock().await;
                 //下面的操作并不会让旧版本失效，后续需要通过一个完整的重建 /repo/install_pkg的操作来释放
-                named_mgr.set_file(format!("/repo/install_pkg/{}/{}/chunk",will_download_pkg_info.pkg_name,will_download_pkg_info.pkg_version),&chunk_id.to_obj_id(),
+                named_mgr.set_file(format!("/repo/install_pkg/{}/{}/chunk",will_download_pkg_info.pkg_name,will_download_pkg_info.pkg_version).as_str(),&chunk_id.to_obj_id(),
                 "repo_service","root").await.map_err(|e| {
                     error!("set file failed, err:{}", e);
                     RPCErrors::ReasonError(format!("set file failed, err:{}", e))
@@ -548,7 +549,7 @@ impl RepoServer {
                 let named_mgr = named_mgr.lock().await;
 
                 //这个路径保存的是自己发布的pkg
-                named_mgr.set_file(format!("/repo/pkg/{}/{}/chunk",pkg_meta.pkg_name,pkg_meta.version),
+                named_mgr.set_file(format!("/repo/pkg/{}/{}/chunk",pkg_meta.pkg_name.as_str(),pkg_meta.version.as_str()).as_str(),
                 &chunk_id.to_obj_id(),"repo_service",user_id.as_str())
                 .await.map_err(|e| {
                     error!("handle_pub_pkg: {} 's chunk:{:?} not found", pkg_meta.pkg_name.as_str(),chunk_id);
@@ -626,7 +627,7 @@ impl RepoServer {
         }
         let named_mgr = named_mgr.unwrap();
         let named_mgr = named_mgr.lock().await;
-        let index_obj_id = named_mgr.get_obj_id_by_path("/repo/meta_index.db".to_string()).await.map_err(|e| {
+        let (index_obj_id,_path_obj_jwt) = named_mgr.get_obj_id_by_path("/repo/meta_index.db").await.map_err(|e| {
             error!("get obj_id from ndn://repo/meta_index.db failed, err:{}", e);
             RPCErrors::ReasonError(format!("get meta_index_db obj_id failed, err:{}", e))
         })?;
@@ -915,3 +916,4 @@ impl kRPCHandler for RepoServer {
     }
 }
 
+//TODO:需要补充设计一些单元测试

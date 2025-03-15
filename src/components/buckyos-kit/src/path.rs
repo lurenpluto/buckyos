@@ -46,11 +46,11 @@ pub fn adjust_path(old_path: &str) -> std::io::Result<PathBuf> {
     std::path::absolute(new_path)?.canonicalize()
 }
 
-pub fn get_buckyos_chunk_data_dir(mgr_id: Option<&str>) -> PathBuf {
+pub fn get_buckyos_named_data_dir(mgr_id: Option<&str>) -> PathBuf {
     if mgr_id.is_none() {
-        get_buckyos_root_dir().join("data").join("chunk")
+        get_buckyos_root_dir().join("data").join("ndn")
     } else {
-        get_buckyos_root_dir().join("data").join("chunk").join(mgr_id.unwrap())
+        get_buckyos_root_dir().join("data").join("ndn").join(mgr_id.unwrap())
     }
 }
 
@@ -68,4 +68,23 @@ pub fn get_relative_path(base_path: &str, full_path: &str) -> String {
 
 pub fn path_join(base: &str, sub_path: &str) -> PathBuf {
     PathBuf::from(base).join(sub_path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_relative_path() {
+        let base_path = "/opt/buckyos/data/chunk";
+        let full_path = "/opt/buckyos/data/chunk/1234567890";
+        let relative_path = get_relative_path(base_path, full_path);
+        assert_eq!(relative_path, "/1234567890");
+
+        let base_path = "/opt/buckyos/data/chunk/";
+        let full_path = "/opt/buckyos/data/chunk/1234567890/asdf?a=1&b=2";
+        let relative_path = get_relative_path(base_path, full_path);
+        assert_eq!(relative_path, "/1234567890/asdf?a=1&b=2");
+
+    }
 }

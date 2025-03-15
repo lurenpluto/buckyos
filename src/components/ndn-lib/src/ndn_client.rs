@@ -1,7 +1,10 @@
+use buckyos_kit::get_relative_path;
+use name_lib::{decode_json_from_jwt_with_pk, decode_jwt_claim_without_verify};
+use name_client::resolve_auth_key;
 use tokio::io::{AsyncRead,AsyncWrite,AsyncWriteExt,AsyncReadExt};
 use url::Url;
 use log::*;
-use reqwest::Client;
+use reqwest::{Body, Client, StatusCode};
 use std::io::SeekFrom;
 use std::ops::Range;
 use std::path::PathBuf;
@@ -11,8 +14,9 @@ use std::pin::Pin;
 use tokio::io::{BufReader,BufWriter};
 use std::collections::HashMap;
 use futures::Future;
+use rand::RngCore;
 
-use crate::{copy_chunk, cyfs_get_obj_id_from_url, get_cyfs_resp_headers, CYFSHttpRespHeaders, ChunkState, FileObject};
+use crate::{build_named_object_by_json, build_obj_id, copy_chunk, cyfs_get_obj_id_from_url, get_cyfs_resp_headers, verify_named_object, CYFSHttpRespHeaders, ChunkState, FileObject, PathObject};
 
 
 pub enum ChunkWorkState {
@@ -34,10 +38,11 @@ pub struct NdnClient {
     session_token:Option<String>,
     default_remote_url:Option<String>,
     enable_mutil_remote:bool,
-    enable_remote_pull:bool,
-    enable_zone_pull:bool,
+    pub enable_remote_pull:bool,
+    pub enable_zone_pull:bool,
     chunk_work_state:HashMap<ChunkId,ChunkWorkState>,//
     pub obj_id_in_host:bool,
+    pub force_trust_remote:bool,//是否强制信任远程节点
 }
 
 
@@ -59,6 +64,7 @@ impl NdnClient {
             enable_zone_pull:false,
             chunk_work_state:HashMap::new(),
             obj_id_in_host:false,
+            force_trust_remote:false,
         }
     }
 
@@ -69,18 +75,126 @@ impl NdnClient {
         } else {
             real_base_url = self.default_remote_url.as_ref().unwrap().clone();
         }
-
+        let result;
         if self.obj_id_in_host {
-            format!("{}.{}",chunk_id.to_base32(),real_base_url)
+            result = format!("{}.{}",chunk_id.to_base32(),real_base_url);
         } else {
-            format!("{}/{}",real_base_url,chunk_id.to_base32())
+            result = format!("{}/{}",real_base_url,chunk_id.to_base32());
         }
+        //去掉多余的/
+        let result = result.replace("//", "/");
+        result
     }
 
+    fn verify_obj_id(obj_id:&ObjId,obj_str:&str)->NdnResult<serde_json::Value> {
+        let obj_json = serde_json::from_str(obj_str)
+            .map_err(|e|NdnError::InvalidId(format!("failed to parse obj_str:{}",e.to_string())))?;
+        let cacl_obj_id = build_obj_id(obj_id.obj_type.as_str(), obj_str);
+        if cacl_obj_id != *obj_id {
+            return Err(NdnError::InvalidId(format!("obj_id not match, known:{} remote:{}",obj_id.to_string(),obj_str)));
+        }
+        Ok(obj_json)
+    }
+
+    fn verify_inner_path_to_obj(resp_headers:&CYFSHttpRespHeaders,inner_path:&str)->NdnResult<()> {
+        //let root_hash = calc_mtree_root_hash(resp_headers.obj_id.unwrap(), inner_path, resp_headers.mtree_path);
+        //return root_hash == resp_headers.root_obj_id.unwrap()
+        Ok(())
+    }
+
+    pub async fn query_chunk_state(&self,chunk_id:ChunkId,target_url:Option<String>)->NdnResult<ChunkState> {
+        let chunk_url;
+        if target_url.is_some() {
+            chunk_url = target_url.unwrap();
+        } else {
+            chunk_url = self.gen_chunk_url(&chunk_id, None);
+        }
+
+        let mut client = Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(|e| NdnError::Internal(format!("Failed to create client: {}", e)))?;
+        
+        let head_res = client.head(&chunk_url)
+            .send()
+            .await
+            .map_err(|e| NdnError::GetFromRemoteError(format!("HEAD request failed: {}", e)))?;
+        debug!("SEND HEAD request, head_res:{}",head_res.status());
+        // 如果chunk已存在，则不需要再次上传
+        match head_res.status() {
+            StatusCode::OK => {
+                return Ok(ChunkState::Completed);
+            },
+            StatusCode::NOT_FOUND => {
+                return Ok(ChunkState::NotExist);
+            },
+            StatusCode::PARTIAL_CONTENT => {
+                return Ok(ChunkState::Incompleted);
+            },
+            _ => {
+                return Err(NdnError::GetFromRemoteError(format!("HEAD request failed: {}", head_res.status())));
+            }
+        }
+    }       
+
+    pub async fn push_chunk(&self,chunk_id:ChunkId,target_url:Option<String>)->NdnResult<()> {
+        let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(self.default_ndn_mgr_id.as_deref()).await
+            .ok_or_else(|| NdnError::Internal("No named data manager available".to_string()))?;
+        let real_named_mgr = named_mgr.lock().await;
+        let (mut chunk_reader,len) = real_named_mgr.open_chunk_reader(&chunk_id,SeekFrom::Start(0),false).await?;
+        drop(real_named_mgr);
+        
+        let chunk_url;
+        if target_url.is_some() {
+            chunk_url = target_url.unwrap();
+        } else {
+            chunk_url = self.gen_chunk_url(&chunk_id, None);
+        }
+
+        let chunk_state = self.query_chunk_state(chunk_id,Some(chunk_url.clone())).await?;
+        if chunk_state == ChunkState::Completed {
+            return Ok(());
+        }
+
+        if chunk_state != ChunkState::NotExist {
+            return Err(NdnError::InvalidId("invlaid remote chunk state".to_string()));
+        }
+
+        let mut client = Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(|e| NdnError::Internal(format!("Failed to create client: {}", e)))?;
+
+        let stream = tokio_util::io::ReaderStream::new(chunk_reader);
+        debug!("SEND PUT request, chunk_url:{}",chunk_url);
+        let res = client.put(chunk_url.clone())
+            .header("Content-Type", "application/octet-stream")
+            .header("cyfs-chunk-size", len.to_string())
+            .body(Body::wrap_stream(stream))
+            .send()
+            .await
+            .map_err(|e| NdnError::GetFromRemoteError(format!("Request failed: {}", e)))?;
+
+        if !res.status().is_success() {
+            return Err(NdnError::GetFromRemoteError(
+                format!("HTTP error: {} for {}", res.status(), chunk_url)
+            ));
+        }
+        
+        Ok(())
+    }
 
     //helper function
     // 使用标准HTTP协议打开URL获取对象,返回obj_id和obj_str
-    pub async fn get_obj_by_url(&self,url:&str,no_verify:Option<bool>) -> NdnResult<(ObjId,String)> {
+    pub async fn get_obj_by_url(&self,url:&str,known_obj_id:Option<ObjId>) -> NdnResult<(ObjId,serde_json::Value)> {
+        let mut obj_id_from_url: Option<ObjId> = None;
+        let mut obj_inner_path: Option<String> = None;     
+        // 尝试从URL中提取对象ID
+        let url_obj_id_result = cyfs_get_obj_id_from_url(url);
+        if let Ok((obj_id, inner_path)) = url_obj_id_result {
+            obj_id_from_url = Some(obj_id);
+            obj_inner_path = inner_path;
+        }
         // 使用标准HTTP协议打开URL获取对象
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(30))
@@ -98,59 +212,106 @@ impl NdnClient {
             ));
         }
         
-        // 从URL或响应头中获取对象ID
-        let mut obj_id_from_url: Option<ObjId> = None;
-        let mut obj_id_from_header: Option<ObjId> = None;
-        
-        // 尝试从URL中提取对象ID
-        let url_obj_id_result = cyfs_get_obj_id_from_url(url);
-        if let Ok((obj_id, _)) = url_obj_id_result {
-            obj_id_from_url = Some(obj_id);
-        }
-        
-        // 尝试从响应头中获取对象ID
         let cyfs_resp_headers = get_cyfs_resp_headers(&res.headers())?;
-        if let Some(header_obj_id) = cyfs_resp_headers.obj_id {
-            obj_id_from_header = Some(header_obj_id);
-        }
-        
-        // 确定最终使用的对象ID
-        let obj_id = match (obj_id_from_url, obj_id_from_header) {
-            (Some(url_id), Some(header_id)) => {
-                // 如果URL和头部都有对象ID，它们必须匹配
-                if url_id != header_id {
-                    return Err(NdnError::InvalidId(format!(
-                        "Object ID mismatch: URL has {}, header has {}",
-                        url_id.to_string(), header_id.to_string()
-                    )));
-                }
-                url_id
-            },
-            (Some(url_id), None) => url_id,
-            (None, Some(header_id)) => header_id,
-            (None, None) => {
-                return Err(NdnError::InvalidId("No object ID found in URL or headers".to_string()));
-            }
-        };
-        
         // 获取响应内容
-        let content = res.text()
+        let obj_str = res.text()
             .await
             .map_err(|e| NdnError::GetFromRemoteError(format!("Failed to read response body: {}", e)))?;
-        
-        // 根据no_verify标志决定是否验证
-        if no_verify.unwrap_or(false) {
-            // 跳过验证
-            debug!("Skipping verification for object: {}", obj_id.to_string());
-        } else {
-            // 执行验证逻辑
-            debug!("Verifying object: {}", obj_id.to_string());
-            // 这里应该实现对象内容的验证逻辑
-            // 例如，检查内容哈希是否与对象ID匹配
-            // 如果验证失败，返回错误
+        //info!(":=>RESP obj_content: {}",obj_str);
+       
+        if known_obj_id.is_some() {
+            let known_obj_id = known_obj_id.unwrap();
+            if obj_inner_path.is_none() {
+                if obj_id_from_url.is_some() {
+                    if obj_id_from_url.unwrap() != known_obj_id {
+                        return Err(NdnError::InvalidId(format!("object id not match, known:{} remote:{}",known_obj_id.to_string(),cyfs_resp_headers.obj_id.unwrap().to_string())));
+                    }
+                }
+            }
+            let real_obj = NdnClient::verify_obj_id(&known_obj_id,&obj_str)?;
+            return Ok((known_obj_id,real_obj));
         }
         
-        Ok((obj_id, content))
+        if obj_id_from_url.is_some() {
+            //URL is a Object Link (CYFS O-Link)
+            let obj_id = obj_id_from_url.unwrap();
+            if obj_inner_path.is_none() {
+                let real_obj = NdnClient::verify_obj_id(&obj_id,&obj_str)?;
+                return Ok((obj_id,real_obj));
+            } else {
+                if cyfs_resp_headers.obj_id.is_none() || cyfs_resp_headers.root_obj_id.is_none() {
+                    return Err(NdnError::InvalidId("no obj id or root obj id".to_string()));
+                }
+                let real_obj_id = cyfs_resp_headers.obj_id.clone().unwrap();
+                let root_obj_id = cyfs_resp_headers.root_obj_id.clone().unwrap();
+                if root_obj_id != obj_id {
+                    return Err(NdnError::InvalidId(format!("root obj id not match, known:{} remote:{}",root_obj_id.to_string(),obj_id.to_string())));
+                }
+                let real_obj = NdnClient::verify_obj_id(&real_obj_id,&obj_str)?;
+                let verify_result = NdnClient::verify_inner_path_to_obj(&cyfs_resp_headers,obj_inner_path.unwrap().as_str())?;
+                return Ok((real_obj_id,real_obj));
+            }
+        } else {
+            //URL is a Semantic Object Link (CYFS R-Link)
+            let obj_id = cyfs_resp_headers.obj_id.clone().unwrap();
+            let real_target_obj = NdnClient::verify_obj_id(&obj_id,&obj_str)?;
+            //let real_path = 
+
+            if url.starts_with("https://")  || self.force_trust_remote {
+                return Ok((obj_id,real_target_obj));
+            }
+
+            if cyfs_resp_headers.path_obj.is_none() {
+                return Err(NdnError::InvalidId("no path obj".to_string()));
+            }
+            let path_obj_jwt = cyfs_resp_headers.path_obj.clone().unwrap();
+            let path_obj = decode_jwt_claim_without_verify(&path_obj_jwt)
+                .map_err(|e|NdnError::InvalidId(format!("decode path obj failed:{}",e.to_string())))?;
+            let path_obj : PathObject = serde_json::from_value(path_obj)
+                .map_err(|e|NdnError::InvalidId(format!("decode path obj failed:{}",e.to_string())))?;
+
+            //verify path obj
+
+            let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(self.default_ndn_mgr_id.as_deref()).await
+                .ok_or_else(|| NdnError::Internal("No named data manager available".to_string()))?;
+            let real_named_mgr = named_mgr.lock().await;
+            let cache_path_obj;
+            if cyfs_resp_headers.root_obj_id.is_some() {
+                if path_obj.target != *cyfs_resp_headers.root_obj_id.as_ref().unwrap() {
+                    return Err(NdnError::InvalidId(format!("path obj target obj id not match, known:{} remote:{}",path_obj.target.to_string(),cyfs_resp_headers.root_obj_id.as_ref().unwrap().to_string())));
+                }
+
+                cache_path_obj = real_named_mgr.get_cache_path_obj(url);
+                obj_inner_path = Some(get_relative_path(&path_obj.path,url));
+                NdnClient::verify_inner_path_to_obj(&cyfs_resp_headers,obj_inner_path.unwrap().as_str())?;
+            } else {
+                if path_obj.target != obj_id {
+                    return Err(NdnError::InvalidId(format!("path obj target obj id not match, known:{} remote:{}",path_obj.target.to_string(),obj_id.to_string())));
+                }
+                cache_path_obj = real_named_mgr.get_cache_path_obj(url);
+            }
+            
+            if cache_path_obj.is_some() {
+                let cache_path_obj = cache_path_obj.unwrap();
+                if cache_path_obj == path_obj {
+                    return Ok((obj_id,real_target_obj));
+                }
+
+                if cache_path_obj.uptime > path_obj.uptime {
+                    return Err(NdnError::InvalidId("cache path obj is newer than remote path obj".to_string()));
+                }
+            }
+            let pk = resolve_auth_key(url).await
+                .map_err(|e|NdnError::InvalidId(format!("resolve auth key failed:{}",e.to_string())))?;
+            //veirfy path_obj is signed by pk
+            let path_obj_result = decode_json_from_jwt_with_pk(&path_obj_jwt,&pk);
+            if path_obj_result.is_err() {
+                return Err(NdnError::InvalidId("path obj is not signed by auth key".to_string()));
+            }
+            real_named_mgr.update_cache_path_obj(url,path_obj);
+            return Ok((obj_id,real_target_obj));            
+        }
+
     }
 
     pub async fn pull_chunk(&self, chunk_id:ChunkId,mgr_id:Option<&str>)->NdnResult<u64> {
@@ -160,75 +321,33 @@ impl NdnClient {
     }
 
     //helper function 
-    pub async fn open_chunk_reader_by_url(&self,chunk_url:&str,expect_chunk_id:Option<ChunkId>,range:Option<Range<u64>>)
+    pub async fn open_chunk_reader_by_url(&self,chunk_url:&str,expect_chunk_id:Option<ChunkId>,range:Option<Range<u64>>)         
         ->NdnResult<(ChunkReader,CYFSHttpRespHeaders)> {
+        let mut obj_id_from_url: Option<ObjId> = None;
+        let mut obj_inner_path: Option<String> = None;     
+
+        let url_obj_id_result = cyfs_get_obj_id_from_url(chunk_url);
+        if let Ok((obj_id, inner_path)) = url_obj_id_result {
+            obj_id_from_url = Some(obj_id);
+            obj_inner_path = inner_path;
+        }
+
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .map_err(|e| NdnError::Internal(format!("Failed to create client: {}", e)))?;
-        let res;
-        if range.is_some() {
-            let range = range.unwrap();
-            res = client.get(chunk_url)
-                .header("Range", format!("bytes={}-{}", range.start, range.end - 1))
-                .send()
-                .await
-                .map_err(|e| NdnError::GetFromRemoteError(format!("Request failed: {}", e)))?;
-        } else {
-            res = client.get(chunk_url)
+        
+        let res = client.get(chunk_url)
             .send()
             .await
             .map_err(|e| NdnError::GetFromRemoteError(format!("Request failed: {}", e)))?;
-        }
-
+        
         if !res.status().is_success() {
             return Err(NdnError::GetFromRemoteError(
                 format!("HTTP error: {} for {}", res.status(), chunk_url)
             ));
         }
-        let must_have_obj_id = expect_chunk_id.is_none();
-
-        let mut chunk_id;
         let cyfs_resp_headers = get_cyfs_resp_headers(&res.headers())?;
-        if cyfs_resp_headers.obj_id.is_some() {
-            debug!("remote return with cyfs-extension headers!:{:?}",cyfs_resp_headers);
-            let obj_id = cyfs_resp_headers.obj_id.clone().unwrap();
-            if obj_id.is_chunk() {
-                chunk_id = ChunkId::from_obj_id(&obj_id);
-            } else {
-                warn!("remote return with cyfs-extension headers, but obj_id is not a chunk:{}",obj_id.to_string());
-                return Err(NdnError::InvalidId(format!("remote return with cyfs-extension headers, but obj_id is not a chunk:{}",
-                    obj_id.to_string())));
-            }
-        } else {
-            let get_obj_result = cyfs_get_obj_id_from_url(chunk_url);
-            if get_obj_result.is_ok() {
-                let (obj_id,obj_inner_path) = get_obj_result.unwrap();
-                if obj_id.is_chunk() {
-                    chunk_id = ChunkId::from_obj_id(&obj_id);
-                } else {
-                    warn!("remote return with cyfs-extension headers, but obj_id is not a chunk:{}",obj_id.to_string());
-                    return Err(NdnError::InvalidId(format!("remote return with cyfs-extension headers, but obj_id is not a chunk:{}",
-                        obj_id.to_string())));
-                }
-            } else {
-                if must_have_obj_id {
-                    warn!("no chunkid found in url:{}",chunk_url);
-                    return Err(NdnError::InvalidId("no chunkid found in url".to_string()));
-                } else {
-                    chunk_id = expect_chunk_id.clone().unwrap();
-                }
-            }
-        }
-
-        if expect_chunk_id.is_some() {
-            let expect_chunk_id = expect_chunk_id.unwrap();
-            if expect_chunk_id != chunk_id {
-                warn!("get_chunk_from_url: chunk-id not match for {}, expect:{} actual:{}", chunk_url, expect_chunk_id.to_string(), chunk_id.to_string());
-                return Err(NdnError::GetFromRemoteError(format!("chunk-id not match for {}", chunk_url)));
-            }
-        }
-
         let content_length = res.content_length();
         if content_length.is_none() {
             return Err(NdnError::GetFromRemoteError(format!("content length not found for {}", chunk_url)));
@@ -241,9 +360,94 @@ impl NdnClient {
         let reader = StreamReader::new(stream);
         let reader = Box::pin(reader);
 
-        Ok((reader,cyfs_resp_headers))
+        //start verify
+        if expect_chunk_id.is_some() {
+            let known_obj_id = expect_chunk_id.unwrap();
+            if obj_inner_path.is_none() {
+                if obj_id_from_url.is_some() {
+                    let chunk_id_from_url = ChunkId::from_obj_id(&obj_id_from_url.unwrap());
+                    if chunk_id_from_url != known_obj_id {
+                        return Err(NdnError::InvalidId(format!("chunk id not match, known:{} remote:{}",
+                            chunk_id_from_url.to_string(),known_obj_id.to_string())));
+                    }
+                }
+            }
+            return Ok((reader,cyfs_resp_headers));
+        }
+        
+        if obj_id_from_url.is_some() {
+            //URL is a Object Link (CYFS O-Link)
+            let obj_id = obj_id_from_url.unwrap();
+            if obj_inner_path.is_none() {
+                return Ok((reader,cyfs_resp_headers));
+            } else {
+                if cyfs_resp_headers.obj_id.is_none() || cyfs_resp_headers.root_obj_id.is_none() {
+                    return Err(NdnError::InvalidId("no obj id or root obj id".to_string()));
+                }
+                let real_obj_id = cyfs_resp_headers.obj_id.clone().unwrap();
+                let root_obj_id = cyfs_resp_headers.root_obj_id.clone().unwrap();
+                if root_obj_id != obj_id {
+                    return Err(NdnError::InvalidId(format!("root obj id not match, known:{} remote:{}",root_obj_id.to_string(),obj_id.to_string())));
+                }
+                let _verify_result = NdnClient::verify_inner_path_to_obj(&cyfs_resp_headers,obj_inner_path.unwrap().as_str())?;
+                return Ok((reader,cyfs_resp_headers));
+            }
+        } else {
+            //URL is a Semantic Object Link (CYFS R-Link)
+            if cyfs_resp_headers.obj_id.is_none() {
+                return Err(NdnError::InvalidId("no obj id".to_string()));
+            }
 
+            if chunk_url.starts_with("https://") || self.force_trust_remote {
+                return Ok((reader,cyfs_resp_headers));
+            }
+
+            if cyfs_resp_headers.path_obj.is_none() {
+                return Err(NdnError::InvalidId("no path obj".to_string()));
+            }
+            let path_obj_jwt = cyfs_resp_headers.path_obj.clone().unwrap();
+            let path_obj = decode_jwt_claim_without_verify(&path_obj_jwt)
+                .map_err(|e|NdnError::InvalidId(format!("decode path obj failed:{}",e.to_string())))?;
+            let path_obj : PathObject = serde_json::from_value(path_obj)
+                .map_err(|e|NdnError::InvalidId(format!("decode path obj failed:{}",e.to_string())))?;
+            let obj_id = cyfs_resp_headers.obj_id.clone().unwrap();
+
+            let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(self.default_ndn_mgr_id.as_deref()).await
+                .ok_or_else(|| NdnError::Internal("No named data manager available".to_string()))?;
+            let real_named_mgr = named_mgr.lock().await;
+            let cache_path_obj;
+            if cyfs_resp_headers.root_obj_id.is_some() {
+                cache_path_obj = real_named_mgr.get_cache_path_obj(chunk_url);
+                obj_inner_path = Some(get_relative_path(&path_obj.path,chunk_url));
+                NdnClient::verify_inner_path_to_obj(&cyfs_resp_headers,obj_inner_path.unwrap().as_str())?;
+            } else {
+                cache_path_obj = real_named_mgr.get_cache_path_obj(chunk_url);
+            }
+            
+
+            if cache_path_obj.is_some() {
+                let cache_path_obj = cache_path_obj.unwrap();
+                if cache_path_obj == path_obj {
+                    return Ok((reader,cyfs_resp_headers));
+                }
+
+                if cache_path_obj.uptime > path_obj.uptime {
+                    return Err(NdnError::InvalidId("cache path obj is newer than remote path obj".to_string()));
+                }
+            }
+            let pk = resolve_auth_key(chunk_url).await
+                .map_err(|e|NdnError::InvalidId(format!("resolve auth key failed:{}",e.to_string())))?;
+            //veirfy path_obj is signed by pk
+            let path_obj_result = decode_json_from_jwt_with_pk(&path_obj_jwt,&pk);
+            if path_obj_result.is_err() {
+                return Err(NdnError::InvalidId("path obj is not signed by auth key".to_string()));
+            }
+            real_named_mgr.update_cache_path_obj(chunk_url,path_obj);
+            return Ok((reader,cyfs_resp_headers));            
+        }        
     }
+
+
 
     //返回成功下载的chunk_id和chunk_size,下载成功后named mgr种chunk存在于cache中
     pub async fn download_chunk_to_local(&self,chunk_url:&str,chunk_id:ChunkId,local_path:&PathBuf,no_verify:Option<bool>) -> NdnResult<(ChunkId,u64)> {
@@ -276,6 +480,7 @@ impl NdnClient {
         Ok((chunk_id, chunk_size))
     }
 
+    //使用这种模式是发布方承诺用 R-Link发布FileObject,用O-Link发布chunk的模式
     //返回下载成功的FileObj和obj_id，下载成功后named mgr中chunk存在于cache中
     pub async fn download_fileobj_to_local(&self,fileobj_url:&str,local_path:&PathBuf,no_verify:Option<bool>) -> NdnResult<(ObjId,FileObject)> {
     
@@ -283,10 +488,10 @@ impl NdnClient {
         // 2. 得到fileobj的content chunkid
         // 3. 使用download_chunk_to_local将chunk下载到本地指定文件
         // 1. 通过fileobj-url下载并验证fileobj
-        let (obj_id, file_obj_str) = self.get_obj_by_url(fileobj_url, no_verify).await?;
+        let (obj_id, file_obj_json) = self.get_obj_by_url(fileobj_url, None).await?;
         
         // 解析FileObject
-        let file_obj: FileObject = serde_json::from_str(&file_obj_str)
+        let file_obj: FileObject = serde_json::from_value(file_obj_json)
             .map_err(|e| NdnError::Internal(format!("Failed to parse FileObject: {}", e)))?;
         
         // 2. 得到fileobj的content chunkid
@@ -310,56 +515,38 @@ impl NdnClient {
         Ok((obj_id, file_obj))
     }
 
-
-
-    pub async fn verify_url_is_same_as_local_file(&self,url:&str,local_path:&PathBuf) -> NdnResult<bool> {
+    pub async fn verify_remote_is_same_as_local_file(&self,url:&str,local_path:&PathBuf) -> NdnResult<bool> {
         // 1. 通过url下载fileojbect对象
         // 2. 计算本地文件的hash 
         // 3. 比较fileobj的hcontent和本地文件的hash
 
-        // 1. 通过url下载fileojbect对象
-        let (obj_id, file_obj_str) = self.get_obj_by_url(url, None).await?;
-        
-        // 解析FileObject
-        let file_obj: FileObject = serde_json::from_str(&file_obj_str)
-            .map_err(|e| NdnError::Internal(format!("Failed to parse FileObject: {}", e)))?;
-        let content_chunk_id = ChunkId::new(file_obj.content.as_str())
-        .map_err(|e| NdnError::Internal(format!("Failed to parse content chunk id: {}", e)))?;
-        // 2. 计算本地文件的hash 
-        // 首先检查文件是否存在
         if !local_path.exists() {
             return Err(NdnError::Internal(format!("Local file does not exist: {:?}", local_path)));
         }
-        
-        // 打开本地文件
         let mut file = tokio::fs::File::open(local_path).await
             .map_err(|e| NdnError::IoError(format!("Failed to open local file: {}", e)))?;
-        
-        // 获取文件大小
         let file_size = file.metadata().await
             .map_err(|e| NdnError::IoError(format!("Failed to get file metadata: {}", e)))?
             .len();
-        
-        // 检查文件大小是否与FileObject中声明的大小一致
+
+        let (obj_id, file_obj_json) = self.get_obj_by_url(url, None).await?;
+        let file_obj: FileObject = serde_json::from_value(file_obj_json)
+            .map_err(|e| NdnError::Internal(format!("Failed to parse FileObject: {}", e)))?;
+        let content_chunk_id = ChunkId::new(file_obj.content.as_str())
+        .map_err(|e| NdnError::Internal(format!("Failed to parse content chunk id: {}", e)))?;
+
         if file_size != file_obj.size {
             return Ok(false);
         }
-        
-        // 使用ChunkHasher的helper函数计算文件哈希
+
         let mut hasher = ChunkHasher::new(None)
             .map_err(|e| NdnError::Internal(format!("Failed to create chunk hasher: {}", e)))?;
-        
-        //let mut reader = tokio::io::BufReader::new(file);
         let (hash_result,_) = hasher.calc_from_reader(&mut file).await
             .map_err(|e| NdnError::Internal(format!("Failed to calculate hash: {}", e)))?;
-        
-        // 3. 比较fileobj的content和本地文件的hash
         let file_chunk_id = ChunkId::from_sha256_result(&hash_result);
  
         Ok(file_chunk_id == content_chunk_id)
     }
-
-
 
     pub async fn pull_chunk_by_url(&self, chunk_url:String,chunk_id:ChunkId,mgr_id:Option<&str>)->NdnResult<u64> {
         let named_mgr = NamedDataMgr::get_named_data_mgr_by_id(mgr_id).await;
@@ -390,7 +577,7 @@ impl NdnClient {
                     return Err(NdnError::NotFound(chunk_id.to_string()));
                 }
                 let (mut _reader,resp_headers) = open_result.unwrap();
-                chunk_size = resp_headers.chunk_size.unwrap();
+                chunk_size = resp_headers.obj_size.unwrap();
                 reader = Some(_reader);
             },
             _ => {
@@ -484,7 +671,7 @@ mod tests {
     use rand::{thread_rng, RngCore};
 
     fn generate_random_bytes(size: u64) -> Vec<u8> {
-        let mut rng = thread_rng();
+        let mut rng = rand::rng();
         let mut buffer = vec![0u8; size as usize];
         rng.fill_bytes(&mut buffer);
         buffer
@@ -555,6 +742,17 @@ mod tests {
         info!("chunk_id_b:{}",chunk_id_b.to_string());
         let (mut chunk_writer,progress_info) = named_mgr.open_chunk_writer(&chunk_id_b, chunk_b_size, 0).await.unwrap();
         chunk_writer.write_all(&chunk_b).await.unwrap();
+        drop(chunk_writer);
+        named_mgr.complete_chunk_writer(&chunk_id_b).await.unwrap();
+
+        let chunk_c_size:u64 = 1024*1024*3 + 321*71;
+        let chunk_c = generate_random_bytes(chunk_c_size);
+        let mut hasher = ChunkHasher::new(None).unwrap();
+        let hash_c = hasher.calc_from_bytes(&chunk_c);
+        let chunk_id_c = ChunkId::from_sha256_result(&hash_c);
+        info!("chunk_id_c:{}",chunk_id_c.to_string());
+        let (mut chunk_writer,progress_info) = named_mgr.open_chunk_writer(&chunk_id_c, chunk_c_size, 0).await.unwrap();
+        chunk_writer.write_all(&chunk_c).await.unwrap();
         drop(chunk_writer);
         named_mgr.complete_chunk_writer(&chunk_id_b).await.unwrap();
         

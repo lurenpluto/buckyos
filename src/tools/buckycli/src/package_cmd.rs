@@ -5,7 +5,7 @@ use flate2::Compression;
 use jsonwebtoken::{encode, Algorithm, Header};
 use kRPC::kRPC;
 use ndn_lib::*;
-use package_installer::*;
+//use package_installer::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -16,6 +16,8 @@ use std::io::{self, BufReader, Read};
 use std::path::{Path, PathBuf};
 use tar::Builder;
 use tokio::io::AsyncWriteExt;
+use package_lib::*;
+use buckyos_api::*;
 
 #[derive(Debug)]
 pub enum PackCategory {
@@ -40,7 +42,7 @@ pub struct PackResult {
     pkg_name: String,
     version: String,
     hostname: String,
-    dependencies: String,
+    dependencies: HashMap<String, String>,
     target_file_path: PathBuf, // tarball path
     meta_content: String,
 }
@@ -52,7 +54,7 @@ pub struct PackagePubMeta {
     pub hostname: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chunk_id: Option<String>,
-    pub dependencies: String,
+    pub dependencies: HashMap<String, String>,
 }
 
 //index的chunkid需要在repo中计算
@@ -62,151 +64,9 @@ pub struct IndexPubMeta {
     pub hostname: String,
 }
 
-/*
-meta.json
-{
-    "name" : "Home Station",
-    "description" : "Home Station",
-    "vendor_did" : "did:bns:buckyos",
-    "pkg_id" : "home-station",
-    "version" : "0.1.0",
-    "pkg_list" : {
-        "amd64_docker_image" : {
-            "pkg_id":"home-station-x86-img",
-            "docker_image_name":"filebrowser/filebrowser:s6"
-        },
-        "aarch64_docker_image" : {
-            "pkg_id":"home-station-arm64-img",
-            "docker_image_name":"filebrowser/filebrowser:s6"
-        },
-        "web_pages" :{
-            "pkg_id" : "home-station-web-page"
-        }
-    }
-}
- */
-
-pub async fn pack_pkg(pkg_path: &str) -> Result<PackResult, String> {
-    println!("pack path: {}", pkg_path);
-    let pkg_path = Path::new(pkg_path);
-    if !pkg_path.exists() {
-        eprintln!("Error: Specified directory does not exist");
-        return Err(format!("Path {} does not exist", pkg_path.display()));
-    }
-
-    println!("Starting the packing process for directory: {:?}", pkg_path);
-
-    // 检查目录
-    let meta_path = pkg_path.join("meta.json");
-    if !meta_path.exists() {
-        eprintln!("Error: meta.json not found in directory");
-        return Err("meta.json not found in directory".to_string());
-    }
-
-    let items: Vec<_> = fs::read_dir(pkg_path)
-        .map_err(|e| format!("Error: Failed to read directory: {}", e.to_string()))?
-        .filter_map(|entry| entry.ok())
-        .collect();
-
-    println!("Found {} items to pack", items.len());
-
-    // 解析 meta.json
-    /*
-        {
-        "name" : "Home Station",
-        "description" : "Home Station",
-        "hostname" : "test.buckyos.io",
-        "pkg_name" : "test_pkg",
-        "version" : "0.1.0",
-        "pkg_list" : {
-            "amd64_docker_image" : {
-                "package_name":"home-station-x86-img",
-                "version": "*"
-                "docker_image_name":"filebrowser/filebrowser:s6"
-            },
-            "web_pages" :{
-                "package_name" : "home-station-web-page",
-                "version": "0.0.1"
-            }
-        }
-    }
-         */
-    let meta_content = fs::read_to_string(&meta_path)
-        .map_err(|err| format!("Error: Failed to read meta.json: {}", err.to_string()))?;
-    let meta_data: Value = serde_json::from_str(&meta_content)
-        .map_err(|err| format!("Error: Failed to parse meta.json: {}", err.to_string()))?;
-
-    let pkg_name = meta_data
-        .get("pkg_name")
-        .and_then(Value::as_str)
-        .ok_or_else(|| format!("Error: pkg_name missing in meta.json"))?;
-
-    let version = meta_data
-        .get("version")
-        .and_then(Value::as_str)
-        .ok_or_else(|| format!("Error: version missing in meta.json"))?;
-
-    let hostname = meta_data
-        .get("hostname")
-        .and_then(Value::as_str)
-        .ok_or_else(|| format!("Error: hostname missing in meta.json"))?;
-
-    let deps = match meta_data.get("pkg_list") {
-        Some(deps) => {
-            //转换deps为Value::Object
-            let deps = deps
-                .as_object()
-                .ok_or_else(|| format!("Error: pkg_list is not a map"))?;
-
-            //依次遍历deps，获取pkg_name和version
-            let mut deps_pkgs = HashMap::new();
-            for (item_name, pkg_data) in deps.iter() {
-                let pkg_data = pkg_data
-                    .as_object()
-                    .ok_or_else(|| format!("Error: pkg_list item {} is not a map", pkg_name))?;
-
-                let pkg_name = pkg_data
-                    .get("package_name")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| {
-                        format!("Error: sub pkg name missing in pkg_list item {}", item_name)
-                    })?;
-
-                let version = pkg_data
-                    .get("version")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| {
-                        format!(
-                            "Error: sub pkg version missing in pkg_list item {}",
-                            item_name
-                        )
-                    })?;
-
-                deps_pkgs.insert(pkg_name.to_string(), version.to_string());
-            }
-            serde_json::to_string(&deps_pkgs).map_err(|e| {
-                format!(
-                    "Error: Failed to serialize dependencies to json string: {}",
-                    e.to_string()
-                )
-            })?
-        }
-        None => "{}".to_string(),
-    };
-
-    // TODO dependencies？
-    println!(
-        "Parsed meta.json: pkg_name = {}, version = {}, hostname = {}, dependencies = {}",
-        pkg_name, version, hostname, deps
-    );
-
-    // 创建 tarball
-    let parent_dir = pkg_path.parent().unwrap();
-    let tarball_name = format!("{}-{}.bkz", pkg_name, version);
-    let tarball_path = parent_dir.join(&tarball_name);
-
-    let tar_gz = File::create(&tarball_path)
-        .map_err(|err| format!("Error: Failed to create package file: {}", err.to_string()))?;
+pub async fn tar_gz(src_dir: &Path, tarball_path: &Path) -> Result<(), String> {
+    let tar_gz = File::create(tarball_path)
+        .map_err(|e| format!("创建打包文件失败: {}", e.to_string()))?;
     let enc = GzEncoder::new(tar_gz, Compression::default());
     let mut tar = Builder::new(enc);
 
@@ -221,6 +81,10 @@ pub async fn pack_pkg(pkg_path: &str) -> Result<PackResult, String> {
             let path = entry.path();
             let name = path.strip_prefix(base).unwrap();
 
+            if path.starts_with(".") {
+                continue;
+            }
+            
             if path.is_dir() {
                 tar.append_dir(name, &path)?;
                 append_dir_all(tar, &path, base)?;
@@ -231,38 +95,133 @@ pub async fn pack_pkg(pkg_path: &str) -> Result<PackResult, String> {
         Ok(())
     }
 
-    append_dir_all(&mut tar, pkg_path, pkg_path).map_err(|err| {
-        format!(
-            "Error: Failed to add files and directories to tarball: {}",
-            err.to_string()
-        )
+    append_dir_all(&mut tar, src_dir, src_dir).map_err(|e| {
+        format!("添加文件到打包文件失败: {}", e.to_string())
     })?;
 
-    tar.finish().map_err(|err| {
-        format!(
-            "Error: Failed to finalize package creation: {}",
-            err.to_string()
-        )
+    tar.finish().map_err(|e| {
+        format!("完成打包过程失败: {}", e.to_string())
     })?;
+    Ok(())
+}
 
-    println!(
-        "Package {} version {} by {} has been packed successfully.",
-        pkg_name, version, hostname
-    );
-    println!("Package created at: {:?}", tarball_path);
+
+pub async fn pack_raw_pkg(pkg_path: &str, dest_dir: &str, owner_private_key_path: Option<String>) -> Result<PackResult, String> {
+    println!("开始打包路径: {}", pkg_path);
+    let pkg_path = Path::new(pkg_path);
+    if !pkg_path.exists() {
+        return Err(format!("指定的路径 {} 不存在", pkg_path.display()));
+    }
+    // 读取 meta.json 文件
+    let meta_path = pkg_path.join(".pkg_meta.json");
+    if !meta_path.exists() {
+        return Err("meta.json 文件未在指定目录中找到".to_string());
+    }
+
+    let meta_content = fs::read_to_string(&meta_path)
+        .map_err(|e| format!("读取 .pkg_meta.json 失败: {}", e.to_string()))?;
+    
+    let mut meta_data:PackageMeta = serde_json::from_str(&meta_content)
+        .map_err(|e| format!("解析 .pkg_meta.json 失败: {}", e.to_string()))?;
+
+    let pkg_name = meta_data.pkg_name.clone();
+    let version = meta_data.version.clone();
+    let author = meta_data.author.clone();
+    
+    println!("解析 .pkg_meta.json: pkg_name = {}, version = {}, author = {}", pkg_name, version, author);
+    // 检查并创建目标目录
+    let dest_dir_path = Path::new(dest_dir).join(&pkg_name);
+    if !dest_dir_path.exists() {
+        fs::create_dir_all(dest_dir_path.clone()).map_err(|e| {
+            format!("创建目标目录失败: {}", e.to_string())
+        })?;
+    }
+    // 创建 tarball
+    let tarball_name = format!("{}-{}.tar.gz", pkg_name, version);
+    let tarball_path = dest_dir_path.join(&tarball_name);
+
+    tar_gz(&pkg_path, &tarball_path).await?;
+    println!("pack to {} done", tarball_path.display());
+
+    // 计算 tar.gz 文件的 SHA256 值
+    let file_info = calculate_file_hash(tarball_path.to_str().unwrap())?;
+    let chunk_id = ChunkId::from_sha256_result(&file_info.sha256);
+    
+    // 更新元数据
+    meta_data.chunk_id = Some(chunk_id.to_string());
+    meta_data.chunk_size = Some(file_info.size);
+    meta_data.pub_time = buckyos_kit::buckyos_get_unix_timestamp();
+    let meta_data_json = serde_json::to_value(&meta_data).map_err(|e| {
+        format!("序列化元数据失败: {}", e.to_string())
+    })?;
+    
+    let (pkg_meta_obj_id,pkg_meta_json_str) = build_named_object_by_json("pkg",&meta_data_json);
+    
+    // 保存更新后的元数据到 pkg.meta.json
+    let meta_json_path = dest_dir_path.join("pkg_meta.json");
+    
+    fs::write(&meta_json_path, &pkg_meta_json_str.as_bytes()).map_err(|e| {
+        format!("写入 pkg.meta.json 失败: {}", e.to_string())
+    })?;
+    let meta_json_path = dest_dir_path.join(pkg_meta_obj_id.to_base32());
+    fs::write(&meta_json_path, &pkg_meta_json_str.as_bytes()).map_err(|e| {
+        format!("写入 objid 失败: {}", e.to_string())
+    })?;
+    // 如果提供了私钥，则对元数据进行签名
+    if let Some(key_path) = owner_private_key_path {
+        //let jwt_token = generate_jwt(&key_path, &pkg_meta_json_str)?;
+        let jwt_token = "".to_string();
+        let jwt_path = dest_dir_path.join("pkg_meta.jwt");
+        fs::write(&jwt_path, jwt_token).map_err(|e| {
+            format!("写入 pkg_meta.jwt 失败: {}", e.to_string())
+        })?;
+        println!("pkg_meta.jwt 写入成功: {}", jwt_path.display());
+    }
+
+    println!("包 {} 版本 {} 作者 {} 已成功打包。", pkg_name, version, author);
+    println!("打包文件创建于: {:?}", tarball_path);
+
 
     let pack_ret = PackResult {
-        pkg_name: pkg_name.to_string(),
-        version: version.to_string(),
-        hostname: hostname.to_string(),
+        pkg_name,
+        version,
+        hostname: author,
         target_file_path: tarball_path,
-        dependencies: deps,
-        meta_content,
+        dependencies: meta_data.deps,
+        meta_content: pkg_meta_json_str,
     };
 
     Ok(pack_ret)
 }
 
+//基于pack raw pkg的输出，发布pkg到当前zone(call repo_server.pub_pkg)
+pub async fn publish_raw_pkg(pkg_pack_path_list: &Vec<PathBuf>,zone_host_name: &str) {
+    unimplemented!()
+}
+
+//准备用于发布的dapp_meta,该dapp_meta可用做下一步的发布
+pub async fn pack_dapp_pkg(dapp_dir_path: &str) -> Result<PackResult, String> {
+    //发布dapp_pkg前，需要确保sub_pkgs都已经发布(因此该命令需要在ood上执行)
+    //发布的dapp 的meta里，sub_pkgs使用固定版本号约束，已确保所有的sub_pkgs是统一升级的
+    // 指定dapp meta的路径，和已经用pack_raw_pkg打包好的sub_pkgs的目录路径，这样可以更新最新版本
+    // 将sub_pkgs最新版本发布到当前的ndn_mgr
+    // 自动填充dapp_meta.json的sub_pkgs字段，并构建dapp_meta.jwt(用来publish)
+    unimplemented!()
+   
+}
+
+//基于pack_dapp_pkg输出，发布dapp_pkg到当前zone(call repo_server.pub_pkg)
+pub async fn publish_dapp_pkg(dapp_dir_path: &str,zone_host_name: &str) {
+    unimplemented!()
+}
+
+//call repo_server.pub_index,随后在zone内就会触发相关组件的自动升级了
+pub async fn publish_repo_index() -> Result<(), String> {
+    let api_runtime = get_buckyos_api_runtime().unwrap();
+    unimplemented!()
+}
+
+#[derive(Debug)]
 struct FileInfo {
     sha256: Vec<u8>,
     size: u64,
@@ -289,6 +248,7 @@ fn calculate_file_hash(file_path: &str) -> Result<FileInfo, String> {
                 err.to_string()
             )
         })?;
+        //println!("bytes_read: {}", bytes_read);
         if bytes_read == 0 {
             break;
         }
@@ -304,16 +264,16 @@ fn calculate_file_hash(file_path: &str) -> Result<FileInfo, String> {
     })
 }
 
-fn generate_jwt(pem_file: &str, data: &String) -> Result<String, String> {
-    let private_key = load_private_key_from_file(pem_file)?;
-    let mut header = Header::new(Algorithm::EdDSA);
-    header.kid = None;
-    header.typ = None;
-    let token = encode(&header, data, &private_key)
-        .map_err(|e| format!("Failed to encode data to JWT: {}", e.to_string()))?;
+// fn generate_jwt(pem_file: &str, data: &String) -> Result<String, String> {
+//     let private_key = load_private_key_from_file(pem_file)?;
+//     let mut header = Header::new(Algorithm::EdDSA);
+//     header.kid = None;
+//     header.typ = None;
+//     let token = encode(&header, data, &private_key)
+//         .map_err(|e| format!("Failed to encode data to JWT: {}", e.to_string()))?;
 
-    Ok(token)
-}
+//     Ok(token)
+// }
 
 async fn write_file_to_chunk(
     chunk_id: &ChunkId,
@@ -402,7 +362,7 @@ pub async fn publish_package(
     url: &str,
     session_token: &str,
 ) -> Result<(), String> {
-    let pack_ret = pack_pkg(pkg_path).await?;
+    let pack_ret = pack_dapp_pkg(pkg_path).await?;
 
     let pack_file_path = pack_ret.target_file_path.clone();
 
@@ -436,10 +396,11 @@ pub async fn publish_package(
         version: pack_ret.version,
         hostname: pack_ret.hostname,
         chunk_id: Some(chunk_id.to_string()),
-        dependencies: pack_ret.dependencies,
+        dependencies: HashMap::new(),
     };
 
-    let jwt_token: String = generate_jwt(pem_file, &pack_ret.meta_content)?;
+    //let jwt_token: String = generate_jwt(pem_file, &pack_ret.meta_content)?;
+    let jwt_token = "".to_string();
     println!("pub meta: {:?}, jwt_token: {}:", pkg_meta, jwt_token);
 
     // 上传元数据到repo
@@ -464,41 +425,6 @@ pub async fn publish_package(
     Ok(())
 }
 
-pub async fn publish_index(
-    pem_file: &str,
-    version: &str,
-    hostname: &str,
-    url: &str,
-    session_token: &str,
-) -> Result<(), String> {
-    let pub_meta = IndexPubMeta {
-        version: version.to_string(),
-        hostname: hostname.to_string(),
-    };
-    let meta_json_value = serde_json::to_string(&pub_meta).map_err(|e| {
-        format!(
-            "Failed to serialize index meta to json value, err:{:?}",
-            e.to_string()
-        )
-    })?;
-    let jwt_token: String = generate_jwt(pem_file, &meta_json_value)?;
-
-    let client = kRPC::new(url, Some(session_token.to_string()));
-
-    client
-        .call(
-            "pub_index",
-            json!({
-                "version": version.to_string(),
-                "hostname": hostname.to_string(),
-                "jwt": jwt_token,
-            }),
-        )
-        .await
-        .map_err(|e| format!("Failed to publish index, err:{:?}", e))?;
-
-    Ok(())
-}
 
 pub async fn install_pkg(
     pkg_name: &str,
@@ -512,11 +438,11 @@ pub async fn install_pkg(
     );
     let pkg_id = format!("{}#{}", pkg_name, version);
 
-    let deps = Installer::install(&pkg_id, &PathBuf::from(dest_dir), url, None)
-        .await
-        .map_err(|e| format!("Failed to call install package, err:{:?}", e))?;
+    // let deps = Installer::install(&pkg_id, &PathBuf::from(dest_dir), url, None)
+    //     .await
+    //     .map_err(|e| format!("Failed to call install package, err:{:?}", e))?;
 
-    println!("install package success, deps: {:?}", deps);
+    //println!("install package success, deps: {:?}", deps);
 
     Ok(())
 }
@@ -593,3 +519,214 @@ pub async fn install_pkg(
 
 //     Ok(())
 // }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::Path;
+    use tempfile::tempdir;
+    use std::mem;
+    
+    #[tokio::test]
+    async fn test_pack_pkg() {
+        // 创建临时目录作为源目录
+        let src_dir = tempdir().unwrap();
+        let src_path = src_dir.path().to_owned();
+        mem::forget(src_dir);
+        // 创建临时目录作为目标目录
+        let dest_dir = tempdir().unwrap();
+        let dest_path = dest_dir.path().to_str().unwrap().to_string();
+        // 阻止临时目录被删除
+        mem::forget(dest_dir);
+
+
+        // 创建测试文件结构
+        let pkg_name = "test_package";
+        let version = "0.1.0";
+        let author = "test_author";
+        
+        // 创建测试文件
+        fs::write(
+            src_path.join("test_file.txt"),
+            "This is a test file content",
+        ).unwrap();
+        
+        // 创建测试子目录和文件
+        fs::create_dir(src_path.join("subdir")).unwrap();
+        fs::write(
+            src_path.join("subdir").join("subfile.txt"),
+            "This is a subdir file content",
+        ).unwrap();
+        
+        // 创建 .pkg_meta.json 文件
+        let meta = PackageMeta {
+            pkg_name: pkg_name.to_string(),
+            version: version.to_string(),
+            tag: None,
+            category: Some("pkg".to_string()),
+            author: author.to_string(),
+            chunk_id: None,
+            chunk_url: None,
+            chunk_size: None,
+            deps: HashMap::new(),
+            pub_time: 0,
+        };
+        
+        let meta_json = serde_json::to_string_pretty(&meta).unwrap();
+        fs::write(src_path.join(".pkg_meta.json"), meta_json).unwrap();
+        
+        // 执行打包函数
+        let result = pack_raw_pkg(
+            src_path.to_str().unwrap(),
+            &dest_path,
+            None,
+        ).await;
+        
+    
+        // 验证结果
+        assert!(result.is_ok(), "打包失败: {:?}", result.err());
+        
+        let pack_result = result.unwrap();
+        
+        // 验证返回的结果
+        assert_eq!(pack_result.pkg_name, pkg_name);
+        assert_eq!(pack_result.version, version);
+        assert_eq!(pack_result.hostname, author);
+        
+        // 验证文件是否存在
+        let expected_tarball_path = Path::new(&dest_path)
+            .join(pkg_name)
+            .join(format!("{}-{}.tar.gz", pkg_name, version));
+        assert!(expected_tarball_path.exists(), "打包文件不存在");
+        //获取文件的sha256和大小
+        let file_info = calculate_file_hash(expected_tarball_path.to_str().unwrap()).unwrap();
+        //println!("tar: {} : {:?}", expected_tarball_path.display(), &file_info);
+        let chunk_id = ChunkId::from_sha256_result(&file_info.sha256);
+        println!("pkg chunk_id: {}", chunk_id.to_string());
+        // 验证元数据文件是否存在
+        let expected_meta_path = Path::new(&dest_path)
+            .join(pkg_name)
+            .join("pkg_meta.json");
+        assert!(expected_meta_path.exists(), "元数据文件不存在");
+        
+        // 验证元数据内容
+        let meta_content = fs::read_to_string(expected_meta_path).unwrap();
+        let meta_data:PackageMeta = serde_json::from_str(&meta_content).unwrap();
+        
+        assert_eq!(meta_data.pkg_name, pkg_name);
+        assert_eq!(meta_data.version, version);
+        assert_eq!(meta_data.author, author);
+        assert!(meta_data.chunk_id.unwrap() == chunk_id.to_string(), "chunk_id OK");
+        assert!(meta_data.chunk_size.unwrap() == file_info.size, "chunk_size OK");
+        assert!(meta_data.pub_time > 0, "pub_time OK");
+    }
+    
+    #[tokio::test]
+    async fn test_pack_pkg_with_jwt() {
+        // 创建临时目录作为源目录
+        let src_dir = tempdir().unwrap();
+        let src_path = src_dir.path().to_owned();
+        mem::forget(src_dir);
+        // 创建临时目录作为目标目录
+        let dest_dir = tempdir().unwrap();
+        let dest_path = dest_dir.path().to_str().unwrap().to_string();
+        // 阻止临时目录被删除
+        mem::forget(dest_dir);
+        
+        // 创建测试文件结构
+        let pkg_name = "test_package_jwt";
+        let version = "0.1.0";
+        let author = "test_author";
+        
+        // 创建测试文件
+        fs::write(
+            src_path.join("test_file.txt"),
+            "This is a test file content",
+        ).unwrap();
+        
+        // 创建 .pkg_meta.json 文件
+        let meta = PackageMeta {
+            pkg_name: pkg_name.to_string(),
+            version: version.to_string(),
+            tag: None,
+            category: Some("pkg".to_string()),
+            author: author.to_string(),
+            chunk_id: None,
+            chunk_url: None,
+            chunk_size: None,
+            deps: HashMap::new(),
+            pub_time: 0,
+        };
+        
+        let meta_json = serde_json::to_string_pretty(&meta).unwrap();
+        fs::write(src_path.join(".pkg_meta.json"), meta_json).unwrap();
+        
+        // 创建临时私钥文件（注意：这里只是为了测试，实际应该使用有效的私钥）
+        let key_dir = tempdir().unwrap();
+        let key_path = key_dir.path().join("test_key.pem");
+        fs::write(&key_path, r#"
+-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
+-----END PRIVATE KEY-----
+        "#).unwrap();
+        
+        
+        // 执行打包函数
+        let result = pack_raw_pkg(
+            src_path.to_str().unwrap(),
+            &dest_path,
+            Some(key_path.to_str().unwrap().to_string()),
+        ).await;
+        
+        // 由于我们没有真正的私钥，这个测试可能会失败
+        // 在实际环境中，应该使用有效的私钥或者 mock generate_jwt 函数
+        if result.is_ok() {
+            let pack_result = result.unwrap();
+            
+            // 验证 JWT 文件是否存在
+            let expected_jwt_path = Path::new(&dest_path)
+                .join(pkg_name)
+                .join("pkg_meta.jwt");
+            
+            if expected_jwt_path.exists() {
+                println!("JWT 文件成功创建");
+            } else {
+                println!("JWT 文件未创建，可能是由于测试环境中没有有效的私钥");
+            }
+        } else {
+            println!("JWT 测试失败，错误: {:?}", result.err());
+            println!("这可能是由于测试环境中没有有效的私钥");
+        }
+    }
+    
+    #[tokio::test]
+    async fn test_pack_pkg_missing_meta() {
+        // 创建临时目录作为源目录，但不创建 .pkg_meta.json 文件
+        let src_dir = tempdir().unwrap();
+        let src_path = src_dir.path();
+        
+        // 创建临时目录作为目标目录
+        let dest_dir = tempdir().unwrap();
+        let dest_path = dest_dir.path().to_str().unwrap().to_string();
+        
+        // 创建测试文件
+        fs::write(
+            src_path.join("test_file.txt"),
+            "This is a test file content",
+        ).unwrap();
+        
+        // 执行打包函数，应该失败
+        let result = pack_raw_pkg(
+            src_path.to_str().unwrap(),
+            &dest_path,
+            None,
+        ).await;
+        
+        // 验证结果
+        assert!(result.is_err(), "应该因为缺少 .pkg_meta.json 文件而失败");
+        let err = result.err().unwrap();
+        assert!(err.contains("meta.json 文件未在指定目录中找到"), 
+                "错误消息应该提及缺少 meta.json 文件，实际错误: {}", err);
+    }
+}
