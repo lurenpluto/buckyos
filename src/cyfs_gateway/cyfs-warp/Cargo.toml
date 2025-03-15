@@ -33,6 +33,7 @@ nom = "*"
 shlex = "*"
 http-types = "*"
 async-recursion = "*"
+xmltree = "*"
 
 tokio-stream = { version = "*", features = ["full"] }
 ndn-lib = { path = "../../components/ndn-lib" }
