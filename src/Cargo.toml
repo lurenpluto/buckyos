@@ -19,6 +19,7 @@ members = [
     "./cyfs_gateway/cyfs-warp",
     "./cyfs_gateway/cyfs-sn",
     "./cyfs_gateway/cyfs-socks",
+    "./cyfs_gateway/cyfs-process-chain",
 
     "./kernel/kRPC",
     "./kernel/rbac",
@@ -31,7 +32,7 @@ members = [
     "./frame/repo_service",
     "./frame/smb_service",
 
-    "./tools/buckycli", 
+    "./tools/buckycli", "cyfs_gateway/cyfs-process-chain", 
     #"./apps/tray-controller"
 ]
 

@@ -4,8 +4,6 @@ mod router;
 mod http_server;
 mod ndn_router;
 mod cert;
-mod block;
-mod chain;
 
 pub use router::*;
 pub use http_server::*;
