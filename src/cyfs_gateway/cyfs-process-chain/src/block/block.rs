@@ -1,6 +1,7 @@
 use super::cmd::*;
 use std::collections::HashMap;
 use std::fmt;
+use std::str::FromStr;
 
 // The different types of blocks, some cmds are only allowed in certain blocks
 // Block type
@@ -9,6 +10,29 @@ pub enum BlockType {
     Probe,
     Process,
     Rewrite,
+}
+
+impl BlockType {
+    pub fn as_str(&self) -> &str {
+        match self {
+            BlockType::Probe => "probe",
+            BlockType::Process => "process",
+            BlockType::Rewrite => "rewrite",
+        }
+    }
+}
+
+impl FromStr for BlockType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "probe" => Ok(BlockType::Probe),
+            "process" => Ok(BlockType::Process),
+            "rewrite" => Ok(BlockType::Rewrite),
+            _ => Err(format!("Invalid block type: {}", s)),
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]

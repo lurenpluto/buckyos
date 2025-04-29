@@ -14,7 +14,7 @@ pub struct Context {
 impl Context {
     fn new() -> Self {
         let hosts = new_memory_host_storage();
-        Context {
+        Self {
             req: Request::new(http_types::Method::Get, http_types::Url::parse("http://localhost").unwrap()),
             resp: None,
             hosts,

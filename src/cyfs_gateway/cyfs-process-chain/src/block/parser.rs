@@ -170,7 +170,7 @@ impl BlockCommandTranslator {
     pub async fn translate(&self, block: &mut Block) -> Result<(), String> {
         for line in &mut block.lines {
             for (expr, _) in &mut line.expressions {
-                if let Expression::Command(ref mut cmd) = expr {
+                if let Expression::Command(cmd) = expr {
                     let parser = self.parser.get_parser(&cmd.command.name);
                     if parser.is_none() {
                         let msg = format!("No parser for command: {}", cmd.command.name);

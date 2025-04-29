@@ -19,7 +19,7 @@ pub struct BlockExecuter {
 
 impl BlockExecuter {
     pub fn new() -> Self {
-        BlockExecuter { goto_counter: 0 }
+        Self { goto_counter: 0 }
     }
 
     // Execute the block

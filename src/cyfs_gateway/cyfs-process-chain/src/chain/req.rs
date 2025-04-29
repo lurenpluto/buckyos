@@ -65,6 +65,12 @@ impl RequestItem {
         }
     }
 
+    pub fn append_header(&mut self, key: &str, value: &str) {
+        self.req.append_header(key, value);
+         
+        debug!("Append header {} with value {}", key, value);
+    }
+
     pub fn get_resp_header(&self, key: &str) -> Option<&str> {
         self.resp
             .as_ref()
